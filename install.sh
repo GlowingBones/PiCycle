@@ -344,8 +344,23 @@ echo "MSFT100" > os_desc/qw_sign
 # ============ Function 1: RNDIS Network ============
 log "Creating RNDIS function..."
 mkdir -p functions/rndis.usb0
-echo "RNDIS" > functions/rndis.usb0/os_desc/interface.rndis/compatible_id
-echo "5162001" > functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+
+# Wait for os_desc interface directory to be created by kernel
+log "Waiting for RNDIS os_desc interface..."
+for i in $(seq 1 10); do
+    [ -d "functions/rndis.usb0/os_desc/interface.rndis" ] && break
+    sleep 0.5
+done
+
+if [ ! -d "functions/rndis.usb0/os_desc/interface.rndis" ]; then
+    log "ERROR: RNDIS os_desc interface not created - Windows network may not work"
+else
+    # Set Windows OS descriptor IDs for RNDIS auto-detection
+    echo "RNDIS" > functions/rndis.usb0/os_desc/interface.rndis/compatible_id
+    echo "5162001" > functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+    log "RNDIS OS descriptors configured for Windows"
+fi
+
 # Set MAC addresses
 echo "48:6f:73:74:50:43" > functions/rndis.usb0/host_addr
 echo "42:61:64:55:53:42" > functions/rndis.usb0/dev_addr
