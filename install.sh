@@ -597,6 +597,235 @@ DNSMASQEOF
 
     systemctl enable ssh 2>/dev/null || true
     echo -e "  ${GREEN}✓${NC} Network and DHCP configured"
+
+
+    # Web server (lightweight) + PHP for http://10.55.0.1/
+    echo -e "\n${YELLOW}[WEB] Configuring web server and PHP...${NC}"
+
+    # Determine primary non-root user for ~/PiCycle/assets and ~/www
+    INVOKER_USER=""
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        INVOKER_USER="$SUDO_USER"
+    else
+        INVOKER_USER="$(getent passwd 1000 2>/dev/null | cut -d: -f1)"
+        if [ -z "$INVOKER_USER" ]; then
+            INVOKER_USER="$(getent passwd 2>/dev/null | awk -F: '$3>=1000 && $3<65534 {print $1; exit}')"
+        fi
+    fi
+    if [ -z "$INVOKER_USER" ]; then
+        INVOKER_USER="root"
+    fi
+
+    INVOKER_HOME="$(getent passwd "$INVOKER_USER" 2>/dev/null | cut -d: -f6)"
+    if [ -z "$INVOKER_HOME" ]; then
+        INVOKER_HOME="/root"
+    fi
+
+    # Stop/disable/mask other web servers that can occupy :80
+    for svc in apache2 nginx lighttpd caddy; do
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+        systemctl mask "$svc" 2>/dev/null || true
+    done
+
+    apt update -qq || true
+    DEBIAN_FRONTEND=noninteractive apt install -y php-cli php-cgi curl >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt install -y uhttpd >/dev/null 2>&1 || true
+
+    # Make php-cgi usable (prevents common CGI "Security Alert" failures)
+    for ini in /etc/php/*/cgi/php.ini; do
+        [ -f "$ini" ] || continue
+        if grep -qE '^[;[:space:]]*cgi\.force_redirect' "$ini"; then
+            sed -i 's/^[;[:space:]]*cgi\.force_redirect\s*=.*/cgi.force_redirect = 0/' "$ini" 2>/dev/null || true
+        else
+            echo "cgi.force_redirect = 0" >> "$ini"
+        fi
+    done
+
+    WEBROOT="/var/www/html"
+    mkdir -p "$WEBROOT"
+
+    # Copy ~/PiCycle/assets/ into the web root (recursive, including directories and files)
+    # Result: /var/www/html/index.php is served at http://10.55.0.1/
+    ASSET_DIR=""
+
+    # Prefer the sudo-invoking user's ~/PiCycle/assets
+    if [ -n "${INVOKER_HOME:-}" ] && [ -d "${INVOKER_HOME}/PiCycle/assets" ]; then
+        ASSET_DIR="${INVOKER_HOME}/PiCycle/assets"
+    fi
+
+    # Fallbacks
+    if [ -z "$ASSET_DIR" ]; then
+        for candidate in "/home/pi/PiCycle/assets" "/root/PiCycle/assets"; do
+            if [ -d "$candidate" ]; then
+                ASSET_DIR="$candidate"
+                break
+            fi
+        done
+    fi
+
+    # Last resort: any /home/*/PiCycle/assets directory (most common when username is not pi)
+    if [ -z "$ASSET_DIR" ]; then
+        for candidate in /home/*/PiCycle/assets; do
+            if [ -d "$candidate" ]; then
+                ASSET_DIR="$candidate"
+                break
+            fi
+        done
+    fi
+
+    mkdir -p "$WEBROOT"
+
+    if [ -n "$ASSET_DIR" ] && [ -d "$ASSET_DIR" ]; then
+        # Copy contents of assets into web root (preserves subdirectories)
+        (cd "$ASSET_DIR" && tar cf - .) | (cd "$WEBROOT" && tar xpf -)
+    fi
+
+    # If assets did not provide index.php, create a minimal placeholder
+    if [ ! -f "$WEBROOT/index.php" ]; then
+        cat > "$WEBROOT/index.php" <<'PHP'
+<?php
+header('Content-Type: text/plain; charset=utf-8');
+echo "Missing ~/PiCycle/assets/index.php\n";
+?>
+PHP
+    fi
+
+    # Permissions: readable by the web server, writable by the primary user
+    if [ -n "${INVOKER_USER:-}" ] && [ "$INVOKER_USER" != "root" ] && id -u "$INVOKER_USER" >/dev/null 2>&1; then
+        chown -R "$INVOKER_USER":"$INVOKER_USER" "$WEBROOT" 2>/dev/null || true
+    fi
+    chmod -R a+rX,u+w "$WEBROOT" 2>/dev/null || true
+    chmod 0644 "$WEBROOT/index.php" 2>/dev/null || true
+
+    # Ensure / redirects to /index.php if the server does not index index.php by default
+    # Do not overwrite a user-provided index.html from ~/PiCycle/assets/
+    if [ ! -f "$WEBROOT/index.html" ]; then
+        cat > "$WEBROOT/index.html" <<'HTML'
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="refresh" content="0; url=/index.php">
+    <title>Redirecting</title>
+  </head>
+  <body>
+    <script>location.replace("/index.php");</script>
+    <noscript><a href="/index.php">Continue</a></noscript>
+  </body>
+</html>
+HTML
+        chmod 0644 "$WEBROOT/index.html" 2>/dev/null || true
+    fi
+
+    # Symlink ~/www -> /var/www/html for easy access (invoker, pi, and root)
+    if [ -n "$INVOKER_HOME" ] && [ -d "$INVOKER_HOME" ] && [ "$INVOKER_HOME" != "/root" ]; then
+        ln -sfn "$WEBROOT" "${INVOKER_HOME}/www"
+        chown -h "$INVOKER_USER":"$INVOKER_USER" "${INVOKER_HOME}/www" 2>/dev/null || true
+    fi
+    if id -u pi >/dev/null 2>&1; then
+        PI_HOME="$(getent passwd pi 2>/dev/null | cut -d: -f6)"
+        if [ -n "$PI_HOME" ] && [ -d "$PI_HOME" ]; then
+            ln -sfn "$WEBROOT" "${PI_HOME}/www"
+            chown -h pi:pi "${PI_HOME}/www" 2>/dev/null || true
+        fi
+    fi
+    ln -sfn "$WEBROOT" /root/www
+
+    # Wrapper selects uhttpd if usable, otherwise falls back to PHP built-in server
+    cat > /usr/bin/picycle_web.sh <<'WEBEOF'
+#!/bin/bash
+set -euo pipefail
+
+WEBROOT="/var/www/html"
+MODE_FILE="/etc/picycle/web_mode"
+
+MODE=""
+if [ -f "$MODE_FILE" ]; then
+  MODE="$(tr -d ' \t\r\n' < "$MODE_FILE" 2>/dev/null || true)"
+fi
+
+PHPCGI="$(command -v php-cgi 2>/dev/null || true)"
+PHPBIN="$(command -v php 2>/dev/null || true)"
+UHTTPD="$(command -v uhttpd 2>/dev/null || true)"
+
+run_php_builtin() {
+  [ -n "$PHPBIN" ] || exit 1
+  exec "$PHPBIN" -S 0.0.0.0:80 -t "$WEBROOT"
+}
+
+run_uhttpd() {
+  [ -n "$UHTTPD" ] || return 1
+
+  # Require interpreter mapping support for .php
+  if ! "$UHTTPD" --help 2>&1 | grep -qE '(^|[[:space:]])-i[[:space:]]'; then
+    return 1
+  fi
+
+  ARGS=(-f -p 0.0.0.0:80 -h "$WEBROOT")
+
+  if "$UHTTPD" --help 2>&1 | grep -qE '(^|[[:space:]])-x[[:space:]]'; then
+    ARGS+=( -x /cgi-bin )
+  fi
+
+  if [ -n "$PHPCGI" ]; then
+    ARGS+=( -i ".php=$PHPCGI" )
+  else
+    return 1
+  fi
+
+  if "$UHTTPD" --help 2>&1 | grep -qE '(^|[[:space:]])-I[[:space:]]'; then
+    ARGS+=( -I index.php )
+  fi
+
+  exec "$UHTTPD" "${ARGS[@]}"
+}
+
+if [ "$MODE" = "php" ]; then
+  run_php_builtin
+fi
+
+# Default: try uhttpd, then fall back to PHP built-in
+run_uhttpd || run_php_builtin
+WEBEOF
+    chmod 0755 /usr/bin/picycle_web.sh
+
+    # Dedicated systemd service so the web server starts on boot
+    cat > /etc/systemd/system/picycle-web.service <<'EOF'
+[Unit]
+Description=PiCycle web server
+After=network.target picycle.service
+Wants=picycle.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/picycle_web.sh
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable picycle-web.service 2>/dev/null || true
+    systemctl restart picycle-web.service 2>/dev/null || systemctl start picycle-web.service 2>/dev/null || true
+
+    # Self-test: ensure server is reachable and PHP is executing
+    rm -f /tmp/picycle_web_test.out 2>/dev/null || true
+    for _i in 1 2 3 4 5; do
+        if curl -fsS http://127.0.0.1/index.php -o /tmp/picycle_web_test.out 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+
+    if [ -s /tmp/picycle_web_test.out ] && grep -q "<?php" /tmp/picycle_web_test.out; then
+        echo "php" > /etc/picycle/web_mode 2>/dev/null || true
+        systemctl restart picycle-web.service 2>/dev/null || true
+    fi
+
+    echo -e "  ${GREEN}✓${NC} Web server configured"
     
     # Final check
     echo -e "\n${YELLOW}[10/10] Verifying installation...${NC}"
