@@ -434,13 +434,11 @@ log "Mass storage bound to $STORAGE"
 
 # ============ Link functions to config ============
 log "Linking functions to config..."
-# Symlink paths must be relative to where the symlink is located, not cwd
-# From configs/c.1/ we need to go ../../ to reach the gadget root
-ln -sf ../../functions/rndis.usb0 configs/c.1/
-ln -sf ../../functions/hid.usb0 configs/c.1/
-ln -sf ../../functions/mass_storage.usb0 configs/c.1/
-# From os_desc/ we need to go ../ to reach the gadget root
-ln -sf ../configs/c.1 os_desc/
+# USB gadget configfs resolves symlink targets from the gadget root, not from the symlink location
+ln -sf functions/rndis.usb0 configs/c.1/
+ln -sf functions/hid.usb0 configs/c.1/
+ln -sf functions/mass_storage.usb0 configs/c.1/
+ln -sf configs/c.1 os_desc/
 
 # ============ Enable gadget ============
 log "Enabling gadget on $UDC..."
