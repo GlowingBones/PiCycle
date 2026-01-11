@@ -59,11 +59,10 @@ EOF
 # Show main menu
 show_menu() {
     echo -e "${WHITE}${BOLD}Main Menu:${NC}\n"
-    echo -e "${GREEN}  [1]${NC} ${CYAN}System Scan${NC} - Analyze hardware, software & current configuration"
-    echo -e "${GREEN}  [2]${NC} ${MAGENTA}Install PiCycle${NC} - Configure USB composite gadget (HID+Storage+Network)"
-    echo -e "${GREEN}  [3]${NC} ${YELLOW}Diagnostic Report${NC} - Run post-install tests & generate troubleshooting report"
-    echo -e "${GREEN}  [4]${NC} ${BLUE}Restore Defaults${NC} - Remove PiCycle and restore original settings"
-    echo -e "${GREEN}  [5]${NC} ${RED}Exit${NC}\n"
+    echo -e "${GREEN}  [1]${NC} ${MAGENTA}Install PiCycle${NC} - Configure USB composite gadget (HID+Storage+Network)"
+    echo -e "${GREEN}  [2]${NC} ${YELLOW}Diagnostic Report${NC} - Run post-install tests & generate troubleshooting report"
+    echo -e "${GREEN}  [3]${NC} ${BLUE}Restore Defaults${NC} - Remove PiCycle and restore original settings"
+    echo -e "${GREEN}  [4]${NC} ${RED}Exit${NC}\n"
     echo -e "${GRAY}════════════════════════════════════════════════════════════════${NC}"
 }
 
@@ -233,38 +232,10 @@ install_picycle() {
     apt install -y dosfstools avahi-daemon jq 2>&1 | grep -E "Setting up|already" || true
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
-    # Prompt for storage size
+    # Configure storage size (always 8GB)
     echo -e "\n${YELLOW}[6/10] Configuring USB mass storage size...${NC}"
-    echo -e "\n${CYAN}Select USB mass storage size:${NC}"
-    echo -e "  ${GREEN}[1]${NC} ${WHITE}128 MB${NC}  ${GRAY}(Minimal)${NC}"
-    echo -e "  ${GREEN}[2]${NC} ${WHITE}2 GB${NC}    ${GRAY}(Recommended)${NC}"
-    echo -e "  ${GREEN}[3]${NC} ${WHITE}8 GB${NC}    ${GRAY}(Large)${NC}"
-    echo -e "  ${GREEN}[4]${NC} ${WHITE}Custom${NC}  ${GRAY}(Specify size)${NC}"
-    echo ""
-    
-    local storage_mb=2048
-    while true; do
-        read -p "Enter selection [1-4] (default: 2): " size_choice
-        size_choice=${size_choice:-2}
-        
-        case $size_choice in
-            1) storage_mb=128; echo -e "  ${GREEN}✓${NC} Selected: 128 MB"; break ;;
-            2) storage_mb=2048; echo -e "  ${GREEN}✓${NC} Selected: 2 GB"; break ;;
-            3) storage_mb=8192; echo -e "  ${GREEN}✓${NC} Selected: 8 GB"; break ;;
-            4)
-                read -p "Enter size in MB (128-16384): " custom_mb
-                if [[ "$custom_mb" =~ ^[0-9]+$ ]] && [ "$custom_mb" -ge 128 ] && [ "$custom_mb" -le 16384 ]; then
-                    storage_mb=$custom_mb
-                    echo -e "  ${GREEN}✓${NC} Selected: ${custom_mb} MB"
-                    break
-                else
-                    echo -e "  ${RED}✗${NC} Invalid size"
-                fi
-                ;;
-            *) echo -e "  ${RED}✗${NC} Invalid selection" ;;
-        esac
-    done
-    
+    local storage_mb=8192
+    echo -e "  ${GREEN}✓${NC} Storage size: 8 GB"
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
     
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
@@ -298,12 +269,18 @@ GADGET="picycle"
 if [ -d "$GADGET" ]; then
     echo "" > "$GADGET/UDC" 2>/dev/null || true
     sleep 1
+    # Remove symlinks from os_desc first
+    find "$GADGET/os_desc/" -type l -delete 2>/dev/null || true
+    # Remove symlinks from config
     find "$GADGET/configs/c.1/" -type l -delete 2>/dev/null || true
-    rm -rf "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
-    rm -rf "$GADGET/configs/c.1" 2>/dev/null || true
-    rm -rf "$GADGET/functions"/* 2>/dev/null || true
-    rm -rf "$GADGET/strings/0x409" 2>/dev/null || true
-    rm -rf "$GADGET/os_desc" 2>/dev/null || true
+    rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
+    rmdir "$GADGET/configs/c.1" 2>/dev/null || true
+    # Remove functions (must remove directories individually)
+    for func in "$GADGET/functions"/*; do
+        [ -d "$func" ] && rmdir "$func" 2>/dev/null || true
+    done
+    rmdir "$GADGET/functions" 2>/dev/null || true
+    rmdir "$GADGET/strings/0x409" 2>/dev/null || true
     rmdir "$GADGET" 2>/dev/null || true
 fi
 
@@ -343,38 +320,61 @@ mkdir -p functions/hid.usb0
 echo 1 > functions/hid.usb0/protocol
 echo 1 > functions/hid.usb0/subclass
 echo 8 > functions/hid.usb0/report_length
-echo -ne '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x03\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x03\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
+# Write HID keyboard report descriptor using printf for reliable binary output
+printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x03\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x03\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
 
-# Function 3: Mass Storage - PROPERLY FORMATTED
+# Verify HID function created
+if [ ! -d "functions/hid.usb0" ]; then
+    echo "ERROR: HID function not created" >&2
+    exit 1
+fi
+
+# Function 3: Mass Storage
 STORAGE="/piusb.img"
-STORAGE_SIZE=2048
+STORAGE_SIZE=8192
 [ -f /etc/picycle/storage_size ] && STORAGE_SIZE=$(cat /etc/picycle/storage_size)
 
+# Create storage file FIRST before setting up the function
 if [ ! -f "$STORAGE" ]; then
-    dd if=/dev/zero of="$STORAGE" bs=1M count=$STORAGE_SIZE status=none
+    echo "Creating ${STORAGE_SIZE}MB storage file..."
+    dd if=/dev/zero of="$STORAGE" bs=1M count=$STORAGE_SIZE status=progress
     sync
     /sbin/mkfs.vfat -F 32 -n "PICYCLE" "$STORAGE"
     sync
 fi
 
+# Verify storage file exists and is readable
+if [ ! -f "$STORAGE" ] || [ ! -r "$STORAGE" ]; then
+    echo "ERROR: Storage file not accessible" >&2
+    exit 1
+fi
+
 mkdir -p functions/mass_storage.usb0
+# Wait for lun.0 directory to be created by kernel
+sleep 1
 echo 1 > functions/mass_storage.usb0/stall
 echo 0 > functions/mass_storage.usb0/lun.0/cdrom
 echo 0 > functions/mass_storage.usb0/lun.0/ro
 echo 1 > functions/mass_storage.usb0/lun.0/removable
+echo 0 > functions/mass_storage.usb0/lun.0/nofua
 echo "$STORAGE" > functions/mass_storage.usb0/lun.0/file
+
+# Verify mass storage function created
+if [ ! -d "functions/mass_storage.usb0" ]; then
+    echo "ERROR: Mass storage function not created" >&2
+    exit 1
+fi
 
 # Link functions - ORDER MATTERS for Windows
 ln -s functions/rndis.usb0 configs/c.1/
 ln -s functions/hid.usb0 configs/c.1/
 ln -s functions/mass_storage.usb0 configs/c.1/
 
-# Windows OS descriptors
-mkdir -p os_desc
+# Windows OS descriptors for auto-detection
 echo 1 > os_desc/use
 echo 0xcd > os_desc/b_vendor_code
 echo MSFT100 > os_desc/qw_sign
-ln -s configs/c.1 os_desc
+ln -s configs/c.1 os_desc/
 
 # Enable
 echo "$UDC" > UDC
@@ -569,19 +569,18 @@ restore_defaults() {
 # Main program
 main() {
     check_root
-    
+
     while true; do
         show_banner
         show_menu
-        
-        read -p "$(echo -e "${WHITE}Enter selection [1-5]: ${NC}")" choice
-        
+
+        read -p "$(echo -e "${WHITE}Enter selection [1-4]: ${NC}")" choice
+
         case $choice in
-            1) system_scan ;;
-            2) install_picycle ;;
-            3) diagnostic_report ;;
-            4) restore_defaults ;;
-            5) echo -e "\n${CYAN}Goodbye!${NC}\n"; exit 0 ;;
+            1) install_picycle ;;
+            2) diagnostic_report ;;
+            3) restore_defaults ;;
+            4) echo -e "\n${CYAN}Goodbye!${NC}\n"; exit 0 ;;
             *) echo -e "\n${RED}Invalid selection${NC}\n"; sleep 2 ;;
         esac
     done
