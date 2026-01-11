@@ -229,7 +229,10 @@ install_picycle() {
     # Install packages
     echo -e "\n${YELLOW}[5/10] Installing required packages...${NC}"
     apt update -qq
-    apt install -y dosfstools avahi-daemon jq 2>&1 | grep -E "Setting up|already" || true
+    apt install -y dosfstools avahi-daemon jq dnsmasq 2>&1 | grep -E "Setting up|already" || true
+    # Stop dnsmasq default service - we'll configure it for usb0 only
+    systemctl stop dnsmasq 2>/dev/null || true
+    systemctl disable dnsmasq 2>/dev/null || true
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
     # Configure storage size (always 8GB)
@@ -251,145 +254,261 @@ install_picycle() {
     
     cat > "$GADGET_SCRIPT" << 'GADGETEOF'
 #!/bin/bash
-sleep 3
-modprobe libcomposite 2>/dev/null || true
-sleep 1
+set -e
+exec 2>&1
 
+log() { echo "[$(date '+%H:%M:%S')] $1"; }
+
+log "PiCycle gadget starting..."
+
+# Wait for system to be ready
+sleep 3
+
+# Load modules
+log "Loading libcomposite module..."
+modprobe libcomposite || { log "ERROR: Failed to load libcomposite"; exit 1; }
+sleep 2
+
+# Wait for UDC
+log "Waiting for UDC controller..."
 UDC=""
-for i in {1..15}; do
+for i in $(seq 1 20); do
     UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)
     [ -n "$UDC" ] && break
     sleep 1
 done
-[ -z "$UDC" ] && exit 1
+if [ -z "$UDC" ]; then
+    log "ERROR: No UDC controller found after 20 seconds"
+    exit 1
+fi
+log "Found UDC: $UDC"
+
+# Mount configfs if needed
+if [ ! -d /sys/kernel/config/usb_gadget ]; then
+    mount -t configfs none /sys/kernel/config 2>/dev/null || true
+fi
 
 cd /sys/kernel/config/usb_gadget/ || exit 1
 GADGET="picycle"
 
+# Clean up existing gadget
 if [ -d "$GADGET" ]; then
+    log "Cleaning up existing gadget..."
     echo "" > "$GADGET/UDC" 2>/dev/null || true
     sleep 1
-    # Remove symlinks from os_desc first
-    find "$GADGET/os_desc/" -type l -delete 2>/dev/null || true
-    # Remove symlinks from config
-    find "$GADGET/configs/c.1/" -type l -delete 2>/dev/null || true
+    rm -f "$GADGET/os_desc/c.1" 2>/dev/null || true
+    rm -f "$GADGET/configs/c.1/rndis.usb0" 2>/dev/null || true
+    rm -f "$GADGET/configs/c.1/hid.usb0" 2>/dev/null || true
+    rm -f "$GADGET/configs/c.1/mass_storage.usb0" 2>/dev/null || true
     rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
     rmdir "$GADGET/configs/c.1" 2>/dev/null || true
-    # Remove functions (must remove directories individually)
-    for func in "$GADGET/functions"/*; do
-        [ -d "$func" ] && rmdir "$func" 2>/dev/null || true
-    done
-    rmdir "$GADGET/functions" 2>/dev/null || true
+    rmdir "$GADGET/functions/rndis.usb0" 2>/dev/null || true
+    rmdir "$GADGET/functions/hid.usb0" 2>/dev/null || true
+    rmdir "$GADGET/functions/mass_storage.usb0" 2>/dev/null || true
     rmdir "$GADGET/strings/0x409" 2>/dev/null || true
     rmdir "$GADGET" 2>/dev/null || true
 fi
 
+log "Creating gadget structure..."
 mkdir -p "$GADGET"
 cd "$GADGET"
 
-# Device descriptor - CRITICAL for Windows auto-detection
-echo 0x0525 > idVendor   # NetChip Technology (Linux-USB Ethernet/RNDIS Gadget)
-echo 0xa4a2 > idProduct  # Ethernet/RNDIS Gadget
+# Device descriptor - Composite device for Windows
+echo 0x1d6b > idVendor   # Linux Foundation
+echo 0x0104 > idProduct  # Multifunction Composite Gadget
 echo 0x0100 > bcdDevice
 echo 0x0200 > bcdUSB
 
-# Composite device class
+# Composite device class - required for multi-function
 echo 0xEF > bDeviceClass
-echo 0x02 > bDeviceSubClass  
+echo 0x02 > bDeviceSubClass
 echo 0x01 > bDeviceProtocol
 
 # Strings
 mkdir -p strings/0x409
-echo "0123456789" > strings/0x409/serialnumber
-echo "Linux" > strings/0x409/manufacturer
-echo "Ethernet/RNDIS Gadget" > strings/0x409/product
+echo "fedcba9876543210" > strings/0x409/serialnumber
+echo "PiCycle" > strings/0x409/manufacturer
+echo "PiCycle USB Gadget" > strings/0x409/product
 
 # Config
 mkdir -p configs/c.1/strings/0x409
-echo "RNDIS+HID+Storage" > configs/c.1/strings/0x409/configuration
+echo "Config 1: RNDIS + HID + Mass Storage" > configs/c.1/strings/0x409/configuration
 echo 250 > configs/c.1/MaxPower
-echo 0xC0 > configs/c.1/bmAttributes
 
-# Function 1: RNDIS (Windows auto-detects this)
+# OS descriptors for Windows RNDIS auto-detection
+mkdir -p os_desc
+echo 1 > os_desc/use
+echo 0xcd > os_desc/b_vendor_code
+echo "MSFT100" > os_desc/qw_sign
+
+# ============ Function 1: RNDIS Network ============
+log "Creating RNDIS function..."
 mkdir -p functions/rndis.usb0
+echo "RNDIS" > functions/rndis.usb0/os_desc/interface.rndis/compatible_id
+echo "5162001" > functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
+# Set MAC addresses
 echo "48:6f:73:74:50:43" > functions/rndis.usb0/host_addr
 echo "42:61:64:55:53:42" > functions/rndis.usb0/dev_addr
 
-# Function 2: HID Keyboard
+# ============ Function 2: HID Keyboard ============
+log "Creating HID keyboard function..."
 mkdir -p functions/hid.usb0
-echo 1 > functions/hid.usb0/protocol
-echo 1 > functions/hid.usb0/subclass
-echo 8 > functions/hid.usb0/report_length
-# Write HID keyboard report descriptor using printf for reliable binary output
-printf '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x03\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x03\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
+echo 1 > functions/hid.usb0/protocol      # Keyboard protocol
+echo 1 > functions/hid.usb0/subclass      # Boot interface subclass
+echo 8 > functions/hid.usb0/report_length # 8-byte reports
 
-# Verify HID function created
-if [ ! -d "functions/hid.usb0" ]; then
-    echo "ERROR: HID function not created" >&2
-    exit 1
-fi
+# Standard USB HID keyboard report descriptor (63 bytes)
+# This is the standard boot keyboard descriptor
+echo -ne '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x03\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x03\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
 
-# Function 3: Mass Storage
+# ============ Function 3: Mass Storage ============
+log "Creating Mass Storage function..."
 STORAGE="/piusb.img"
 STORAGE_SIZE=8192
 [ -f /etc/picycle/storage_size ] && STORAGE_SIZE=$(cat /etc/picycle/storage_size)
 
-# Create storage file FIRST before setting up the function
+# Create storage image FIRST if it doesn't exist
 if [ ! -f "$STORAGE" ]; then
-    echo "Creating ${STORAGE_SIZE}MB storage file..."
-    dd if=/dev/zero of="$STORAGE" bs=1M count=$STORAGE_SIZE status=progress
+    log "Creating ${STORAGE_SIZE}MB storage image (this may take a while)..."
+    dd if=/dev/zero of="$STORAGE" bs=1M count="$STORAGE_SIZE" status=progress 2>&1 || {
+        log "ERROR: Failed to create storage image"
+        exit 1
+    }
     sync
-    /sbin/mkfs.vfat -F 32 -n "PICYCLE" "$STORAGE"
+    log "Formatting storage as FAT32..."
+    /sbin/mkfs.vfat -F 32 -n "PICYCLE" "$STORAGE" || {
+        log "ERROR: Failed to format storage"
+        rm -f "$STORAGE"
+        exit 1
+    }
     sync
+    log "Storage image created successfully"
 fi
 
-# Verify storage file exists and is readable
-if [ ! -f "$STORAGE" ] || [ ! -r "$STORAGE" ]; then
-    echo "ERROR: Storage file not accessible" >&2
+# Verify storage file
+if [ ! -f "$STORAGE" ]; then
+    log "ERROR: Storage file $STORAGE does not exist"
     exit 1
 fi
 
+# Now create the mass_storage function
 mkdir -p functions/mass_storage.usb0
-# Wait for lun.0 directory to be created by kernel
-sleep 1
+
+# The lun.0 directory is auto-created, wait for it
+for i in $(seq 1 10); do
+    [ -d "functions/mass_storage.usb0/lun.0" ] && break
+    sleep 0.5
+done
+
+if [ ! -d "functions/mass_storage.usb0/lun.0" ]; then
+    log "ERROR: lun.0 directory not created"
+    exit 1
+fi
+
+# Configure mass storage
 echo 1 > functions/mass_storage.usb0/stall
 echo 0 > functions/mass_storage.usb0/lun.0/cdrom
 echo 0 > functions/mass_storage.usb0/lun.0/ro
 echo 1 > functions/mass_storage.usb0/lun.0/removable
 echo 0 > functions/mass_storage.usb0/lun.0/nofua
-echo "$STORAGE" > functions/mass_storage.usb0/lun.0/file
-
-# Verify mass storage function created
-if [ ! -d "functions/mass_storage.usb0" ]; then
-    echo "ERROR: Mass storage function not created" >&2
+echo "$STORAGE" > functions/mass_storage.usb0/lun.0/file || {
+    log "ERROR: Failed to bind storage file to gadget"
     exit 1
-fi
+}
+log "Mass storage bound to $STORAGE"
 
-# Link functions - ORDER MATTERS for Windows
-ln -s functions/rndis.usb0 configs/c.1/
-ln -s functions/hid.usb0 configs/c.1/
-ln -s functions/mass_storage.usb0 configs/c.1/
+# ============ Link functions to config ============
+log "Linking functions to config..."
+ln -sf functions/rndis.usb0 configs/c.1/
+ln -sf functions/hid.usb0 configs/c.1/
+ln -sf functions/mass_storage.usb0 configs/c.1/
+ln -sf configs/c.1 os_desc/
 
-# Windows OS descriptors for auto-detection
-echo 1 > os_desc/use
-echo 0xcd > os_desc/b_vendor_code
-echo MSFT100 > os_desc/qw_sign
-ln -s configs/c.1 os_desc/
+# ============ Enable gadget ============
+log "Enabling gadget on $UDC..."
+echo "$UDC" > UDC || {
+    log "ERROR: Failed to enable gadget"
+    exit 1
+}
 
-# Enable
-echo "$UDC" > UDC
+log "Gadget enabled successfully"
 sleep 2
 
-# Configure network
-for i in {1..10}; do
+# ============ Configure USB network interface ============
+log "Configuring usb0 network interface..."
+for i in $(seq 1 15); do
     if ip link show usb0 &>/dev/null; then
+        log "usb0 interface found"
         ip addr flush dev usb0 2>/dev/null || true
         ip addr add 10.55.0.1/24 dev usb0
         ip link set usb0 up
+        log "usb0 configured with IP 10.55.0.1/24"
         break
     fi
     sleep 1
 done
+
+if ! ip link show usb0 &>/dev/null; then
+    log "WARNING: usb0 interface not found after 15 seconds"
+fi
+
+# ============ Start DHCP server for USB network ============
+log "Starting DHCP server on usb0..."
+
+# Create dnsmasq config for usb0
+cat > /etc/dnsmasq.d/usb0.conf << 'DNSMASQEOF'
+# PiCycle USB Network DHCP
+interface=usb0
+bind-interfaces
+dhcp-range=10.55.0.10,10.55.0.100,255.255.255.0,12h
+dhcp-option=option:router,10.55.0.1
+dhcp-option=option:dns-server,10.55.0.1
+dhcp-leasefile=/var/lib/misc/dnsmasq.usb0.leases
+log-dhcp
+DNSMASQEOF
+
+# Create lease file directory
+mkdir -p /var/lib/misc
+touch /var/lib/misc/dnsmasq.usb0.leases
+
+# Kill any existing dnsmasq on usb0 and restart
+pkill -f "dnsmasq.*usb0" 2>/dev/null || true
+sleep 1
+
+# Start dnsmasq for usb0 only
+if ip link show usb0 &>/dev/null; then
+    /usr/sbin/dnsmasq --conf-file=/etc/dnsmasq.d/usb0.conf --pid-file=/run/dnsmasq.usb0.pid &
+    sleep 1
+    if pgrep -f "dnsmasq.*usb0" > /dev/null; then
+        log "DHCP server started successfully"
+    else
+        log "WARNING: DHCP server may not have started"
+    fi
+fi
+
+# ============ Set permissions on HID device ============
+log "Setting up HID device permissions..."
+for i in $(seq 1 10); do
+    if [ -e /dev/hidg0 ]; then
+        chmod 666 /dev/hidg0
+        log "HID device /dev/hidg0 ready with permissions 666"
+        break
+    fi
+    sleep 1
+done
+
+if [ ! -e /dev/hidg0 ]; then
+    log "WARNING: /dev/hidg0 not created - HID keyboard may not work"
+fi
+
+# ============ Summary ============
+log "=========================================="
+log "PiCycle gadget setup complete!"
+log "  Network: usb0 = 10.55.0.1/24"
+log "  DHCP: 10.55.0.10 - 10.55.0.100"
+log "  HID: $([ -e /dev/hidg0 ] && echo 'Ready' || echo 'NOT READY')"
+log "  Storage: $([ -f /piusb.img ] && echo 'Ready' || echo 'NOT READY')"
+log "=========================================="
 GADGETEOF
 
     chmod +x "$GADGET_SCRIPT"
@@ -421,10 +540,10 @@ SERVICEEOF
     echo -e "  ${GREEN}✓${NC} Service enabled"
     
     # Configure network
-    echo -e "\n${YELLOW}[9/10] Configuring USB network...${NC}"
+    echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
     sed -i '/^# PiCycle/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
-    
+
     cat >> /etc/dhcpcd.conf << 'NETEOF'
 
 # PiCycle USB Network
@@ -432,9 +551,25 @@ interface usb0
 static ip_address=10.55.0.1/24
 nohook wpa_supplicant
 NETEOF
-    
+
+    # Create dnsmasq config directory
+    mkdir -p /etc/dnsmasq.d
+    mkdir -p /var/lib/misc
+
+    # Pre-create the dnsmasq config for usb0
+    cat > /etc/dnsmasq.d/usb0.conf << 'DNSMASQEOF'
+# PiCycle USB Network DHCP
+interface=usb0
+bind-interfaces
+dhcp-range=10.55.0.10,10.55.0.100,255.255.255.0,12h
+dhcp-option=option:router,10.55.0.1
+dhcp-option=option:dns-server,10.55.0.1
+dhcp-leasefile=/var/lib/misc/dnsmasq.usb0.leases
+log-dhcp
+DNSMASQEOF
+
     systemctl enable ssh 2>/dev/null || true
-    echo -e "  ${GREEN}✓${NC} Network configured"
+    echo -e "  ${GREEN}✓${NC} Network and DHCP configured"
     
     # Final check
     echo -e "\n${YELLOW}[10/10] Verifying installation...${NC}"
@@ -444,10 +579,17 @@ NETEOF
     
     echo -e "\n${GREEN}${BOLD}✓ PiCycle installation complete!${NC}\n"
     echo -e "${CYAN}${BOLD}IMPORTANT:${NC} ${YELLOW}Reboot required${NC}"
-    echo -e "${CYAN}After reboot:${NC}"
-    echo -e "  • Windows should auto-detect all 3 devices"
-    echo -e "  • Set Windows network adapter IP: ${YELLOW}10.55.0.6/24${NC}"
-    echo -e "  • SSH via WiFi or USB: ${YELLOW}ssh pi@10.55.0.1${NC}\n"
+    echo -e "${CYAN}After reboot, Windows should show:${NC}"
+    echo -e "  ${GREEN}•${NC} ${WHITE}Network adapter${NC} - Auto-configured via DHCP (10.55.0.x)"
+    echo -e "  ${GREEN}•${NC} ${WHITE}USB Drive${NC} - 'PICYCLE' (${storage_mb}MB FAT32)"
+    echo -e "  ${GREEN}•${NC} ${WHITE}HID Keyboard${NC} - Ready for use with picycle.py"
+    echo -e ""
+    echo -e "${CYAN}SSH Access:${NC}"
+    echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
+    echo -e "  • Via WiFi: ${YELLOW}ssh pi@<wifi-ip>${NC}"
+    echo -e ""
+    echo -e "${CYAN}Test HID keyboard:${NC}"
+    echo -e "  ${YELLOW}sudo python3 picycle.py${NC}\n"
     
     read -p "Reboot now? (y/n): " -n 1 -r
     echo
@@ -490,6 +632,12 @@ diagnostic_report() {
         echo "--- Service Status ---"
         systemctl status picycle.service --no-pager
         echo ""
+        echo "--- DHCP Server Status ---"
+        ps aux | grep dnsmasq | grep -v grep || echo "dnsmasq not running"
+        echo ""
+        echo "--- DHCP Leases ---"
+        cat /var/lib/misc/dnsmasq.usb0.leases 2>/dev/null || echo "No leases file"
+        echo ""
         echo "--- Recent Logs ---"
         journalctl -u picycle.service -n 30 --no-pager
         echo ""
@@ -505,16 +653,24 @@ diagnostic_report() {
     local usb0_exists=$(ip link show usb0 &>/dev/null && echo "yes" || echo "no")
     local hidg0_exists=$([ -c /dev/hidg0 ] && echo "yes" || echo "no")
     local storage_exists=$([ -f /piusb.img ] && echo "yes" || echo "no")
-    
+    local dhcp_running=$(pgrep -f "dnsmasq.*usb0" > /dev/null && echo "yes" || echo "no")
+
     echo -e "${GRAY}UDC:${NC}         $([[ $udc_count -gt 0 ]] && echo -e "${GREEN}Found${NC}" || echo -e "${RED}Missing${NC}")"
     echo -e "${GRAY}Service:${NC}     $([[ "$service_status" == "active" ]] && echo -e "${GREEN}Active${NC}" || echo -e "${RED}Inactive${NC}")"
     echo -e "${GRAY}USB Network:${NC} $([[ "$usb0_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
+    echo -e "${GRAY}DHCP Server:${NC} $([[ "$dhcp_running" == "yes" ]] && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
     echo -e "${GRAY}HID Device:${NC}  $([[ "$hidg0_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
     echo -e "${GRAY}Storage:${NC}     $([[ "$storage_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
-    
+
     if [ -f /piusb.img ]; then
         local size_mb=$(stat -c%s /piusb.img | awk '{print int($1/1024/1024)}')
         echo -e "${GRAY}Storage Size:${NC} ${size_mb}MB"
+    fi
+
+    # Show DHCP leases if any
+    if [ -f /var/lib/misc/dnsmasq.usb0.leases ] && [ -s /var/lib/misc/dnsmasq.usb0.leases ]; then
+        echo -e "\n${GRAY}DHCP Leases:${NC}"
+        cat /var/lib/misc/dnsmasq.usb0.leases
     fi
     
     echo ""
@@ -548,6 +704,9 @@ restore_defaults() {
     
     echo -e "\n${YELLOW}[3/5] Removing files...${NC}"
     rm -f "$GADGET_SCRIPT" "$SERVICE_FILE" /piusb.img
+    rm -f /etc/dnsmasq.d/usb0.conf
+    rm -f /var/lib/misc/dnsmasq.usb0.leases
+    pkill -f "dnsmasq.*usb0" 2>/dev/null || true
     
     echo -e "\n${YELLOW}[4/5] Cleaning gadget...${NC}"
     if [ -d /sys/kernel/config/usb_gadget/picycle ]; then
