@@ -345,6 +345,17 @@ echo "MSFT100" > os_desc/qw_sign
 log "Creating RNDIS function..."
 mkdir -p functions/rndis.usb0
 
+# Force Windows to bind the in-box RNDIS driver (no INF)
+# Windows expects EF/04/01 on the RNDIS interface
+echo "EF" > functions/rndis.usb0/class
+echo "04" > functions/rndis.usb0/subclass
+echo "01" > functions/rndis.usb0/protocol
+
+# Enable WCID / Extended OS descriptors if supported (improves Windows auto-detect)
+if [ -f functions/rndis.usb0/wceis ]; then
+    echo 1 > functions/rndis.usb0/wceis
+fi
+
 # Wait for os_desc interface directory to be created by kernel
 log "Waiting for RNDIS os_desc interface..."
 for i in $(seq 1 10); do
