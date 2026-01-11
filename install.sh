@@ -84,14 +84,16 @@ system_scan() {
     
     echo -e "${YELLOW}[+] Scanning USB configuration...${NC}"
     
-    local udc_devices=$(ls /sys/class/udc/ 2>/dev/null || echo "none")
+    local udc_devices=$(ls /sys/class/udc/ 2>/dev/null)
+    udc_devices=${udc_devices:-none}
     local dwc2_loaded=$(lsmod | grep -q dwc2 && echo "true" || echo "false")
     local libcomposite_loaded=$(lsmod | grep -q libcomposite && echo "true" || echo "false")
     
     echo -e "${YELLOW}[+] Checking network configuration...${NC}"
     
     local wifi_connected=$(iwgetid -r 2>/dev/null || echo "Not connected")
-    local wifi_interface=$(ip link | grep -o "wlan[0-9]" | head -1 || echo "none")
+    local wifi_interface=$(ip link | grep -o "wlan[0-9]" | head -1)
+    wifi_interface=${wifi_interface:-none}
     
     cat > "$REPORT_FILE" << EOF
 {
@@ -156,9 +158,9 @@ configure_wifi() {
         cat >> /etc/wpa_supplicant/wpa_supplicant.conf << WIFIEOF
 
 network={
-    ssid="$wifi_ssid"
-    psk="$wifi_pass"
-    key_mgmt=WPA-PSK
+	ssid="$wifi_ssid"
+	psk="$wifi_pass"
+	key_mgmt=WPA-PSK
 }
 WIFIEOF
         
@@ -189,9 +191,9 @@ install_picycle() {
     # Backup existing files
     echo -e "${YELLOW}[1/10] Creating backups...${NC}"
     for file in "$BOOT_DIR/config.txt" "$BOOT_DIR/cmdline.txt" "/etc/dhcpcd.conf" "/etc/modules"; do
-        if [ -f "$file" ] && [ ! -f "$BACKUP_DIR/$(basename $file).bak" ]; then
-            cp "$file" "$BACKUP_DIR/$(basename $file).bak"
-            echo -e "  ${GREEN}✓${NC} Backed up $(basename $file)"
+        if [ -f "$file" ] && [ ! -f "$BACKUP_DIR/$(basename "$file").bak" ]; then
+            cp "$file" "$BACKUP_DIR/$(basename "$file").bak"
+            echo -e "  ${GREEN}✓${NC} Backed up $(basename "$file")"
         fi
     done
     
@@ -207,8 +209,14 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} config.txt configured"
     
     local cmdline=$(cat "$BOOT_DIR/cmdline.txt")
-    cmdline=$(echo "$cmdline" | sed 's/modules-load=dwc2//g' | sed 's/  */ /g')
-    cmdline=$(echo "$cmdline" | sed 's/rootwait/modules-load=dwc2 rootwait/')
+    # Remove any existing modules-load=dwc2 and clean up extra spaces
+    cmdline=$(echo "$cmdline" | sed 's/modules-load=dwc2[^ ]*//g' | sed 's/  */ /g' | sed 's/^ //' | sed 's/ $//')
+    # Add modules-load=dwc2 before rootwait if it exists, otherwise append it
+    if echo "$cmdline" | grep -q "rootwait"; then
+        cmdline=$(echo "$cmdline" | sed 's/rootwait/modules-load=dwc2 rootwait/')
+    else
+        cmdline="$cmdline modules-load=dwc2"
+    fi
     echo "$cmdline" > "$BOOT_DIR/cmdline.txt"
     echo -e "  ${GREEN}✓${NC} cmdline.txt configured"
     
@@ -494,7 +502,7 @@ diagnostic_report() {
     echo -e "${BOLD}${WHITE}═══ Quick Status ═══${NC}"
     local udc_count=$(ls /sys/class/udc/ 2>/dev/null | wc -l)
     local service_status=$(systemctl is-active picycle.service 2>/dev/null)
-    local usb0_exists=$(ip link show usb0 2>/dev/null && echo "yes" || echo "no")
+    local usb0_exists=$(ip link show usb0 &>/dev/null && echo "yes" || echo "no")
     local hidg0_exists=$([ -c /dev/hidg0 ] && echo "yes" || echo "no")
     local storage_exists=$([ -f /piusb.img ] && echo "yes" || echo "no")
     
@@ -528,7 +536,7 @@ restore_defaults() {
     echo -e "\n${YELLOW}[2/5] Restoring backups...${NC}"
     for backup in "$BACKUP_DIR"/*.bak; do
         if [ -f "$backup" ]; then
-            original="$(basename ${backup%.bak})"
+            original="$(basename "${backup%.bak}")"
             case "$original" in
                 config.txt|cmdline.txt) cp "$backup" "$BOOT_DIR/$original" ;;
                 dhcpcd.conf) cp "$backup" "/etc/$original" ;;
@@ -566,7 +574,7 @@ main() {
         show_banner
         show_menu
         
-        read -p "$(echo -e ${WHITE}Enter selection [1-5]: ${NC})" choice
+        read -p "$(echo -e "${WHITE}Enter selection [1-5]: ${NC}")" choice
         
         case $choice in
             1) system_scan ;;
