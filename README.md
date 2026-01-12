@@ -13,7 +13,7 @@ To build this project you will need: <BR>
 
 Step by Step installation:
 
-  install Pi OS on TF card<BR>
+  install Raspberry Pi OS Lite (64-bit) on TF card<BR>
   from your ~ directory do the following<BR>
   sudo raspi-config nonint do_expand_rootfs<BR>
   sudo apt-get install git -y<BR>
