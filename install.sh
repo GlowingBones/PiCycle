@@ -138,87 +138,6 @@ EOF
     read -p "Press Enter to continue..."
 }
 
-# Configure WiFi Access Point
-configure_wifi() {
-    echo -e "\n${CYAN}${BOLD}WiFi Access Point Configuration${NC}"
-    echo -e "${YELLOW}Setting up WiFi AP (SSID: PiCycle)${NC}\n"
-
-    # Get password from user
-    local wifi_pass=""
-    while true; do
-        read -sp "Enter WiFi AP password (8-63 characters): " wifi_pass
-        echo ""
-        if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
-            echo -e "${RED}Password must be 8-63 characters${NC}"
-            continue
-        fi
-        read -sp "Confirm password: " wifi_pass_confirm
-        echo ""
-        if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
-            echo -e "${RED}Passwords do not match${NC}"
-            continue
-        fi
-        break
-    done
-
-    # Install hostapd
-    echo -e "${YELLOW}Installing hostapd...${NC}"
-    apt install -y hostapd >/dev/null 2>&1 || true
-    systemctl stop hostapd 2>/dev/null || true
-
-    # Create hostapd config
-    mkdir -p /etc/hostapd
-    cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
-interface=wlan0
-driver=nl80211
-ssid=PiCycle
-hw_mode=g
-channel=7
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
-wpa=2
-wpa_passphrase=$wifi_pass
-wpa_key_mgmt=WPA-PSK
-wpa_pairwise=TKIP
-rsn_pairwise=CCMP
-HOSTAPDEOF
-    chmod 600 /etc/hostapd/hostapd.conf
-
-    # Point hostapd to config
-    if [ -f /etc/default/hostapd ]; then
-        sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-    fi
-
-    # Create dnsmasq config for wlan0
-    mkdir -p /etc/dnsmasq.d
-    cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
-interface=wlan0
-bind-interfaces
-dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
-dhcp-option=option:router,192.168.4.1
-dhcp-option=option:dns-server,192.168.4.1
-WLANEOF
-
-    # Add wlan0 static IP to dhcpcd.conf
-    sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
-    cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
-
-# PiCycle-AP
-interface wlan0
-static ip_address=192.168.4.1/24
-nohook wpa_supplicant
-
-WLANAPEOF
-
-    # Enable hostapd
-    systemctl unmask hostapd 2>/dev/null || true
-    systemctl enable hostapd 2>/dev/null || true
-
-    echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
-}
-
 # Install PiCycle
 install_picycle() {
     echo -e "\n${MAGENTA}${BOLD}[*] Installing PiCycle USB Composite Gadget${NC}\n"
@@ -226,7 +145,7 @@ install_picycle() {
     mkdir -p "$CONFIG_DIR" "$BACKUP_DIR"
     
     # Backup existing files
-    echo -e "${YELLOW}[1/10] Creating backups...${NC}"
+    echo -e "${YELLOW}[1/9] Creating backups...${NC}"
     for file in "$BOOT_DIR/config.txt" "$BOOT_DIR/cmdline.txt" "/etc/dhcpcd.conf" "/etc/modules"; do
         if [ -f "$file" ] && [ ! -f "$BACKUP_DIR/$(basename "$file").bak" ]; then
             cp "$file" "$BACKUP_DIR/$(basename "$file").bak"
@@ -234,12 +153,8 @@ install_picycle() {
         fi
     done
     
-    # Configure WiFi
-    echo -e "\n${YELLOW}[2/10] Network Configuration...${NC}"
-    configure_wifi
-    
     # Configure boot files
-    echo -e "\n${YELLOW}[3/10] Configuring boot parameters...${NC}"
+    echo -e "\n${YELLOW}[2/9] Configuring boot parameters...${NC}"
     
     sed -i '/^dtoverlay=dwc2/d' "$BOOT_DIR/config.txt"
     echo "dtoverlay=dwc2,dr_mode=peripheral" >> "$BOOT_DIR/config.txt"
@@ -258,14 +173,14 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} cmdline.txt configured"
     
     # Configure modules
-    echo -e "\n${YELLOW}[4/10] Configuring kernel modules...${NC}"
+    echo -e "\n${YELLOW}[3/9] Configuring kernel modules...${NC}"
     sed -i '/^dwc2$/d' /etc/modules
     sed -i '/^libcomposite$/d' /etc/modules
     echo -e "dwc2\nlibcomposite" >> /etc/modules
     echo -e "  ${GREEN}✓${NC} Modules configured"
     
     # Install packages
-    echo -e "\n${YELLOW}[5/10] Installing required packages...${NC}"
+    echo -e "\n${YELLOW}[4/9] Installing required packages...${NC}"
     apt update -qq
     apt install -y dosfstools avahi-daemon jq dnsmasq 2>&1 | grep -E "Setting up|already" || true
     # Stop dnsmasq default service - we'll configure it for usb0 only
@@ -274,7 +189,7 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
     # Configure storage size (always 8GB)
-    echo -e "\n${YELLOW}[6/10] Creating USB mass storage (8GB)...${NC}"
+    echo -e "\n${YELLOW}[5/9] Creating USB mass storage (8GB)...${NC}"
     local storage_mb=8192
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
 
@@ -300,7 +215,7 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} Storage image created and formatted"
     
     # Create gadget script
-    echo -e "\n${YELLOW}[7/10] Creating USB gadget script...${NC}"
+    echo -e "\n${YELLOW}[6/9] Creating USB gadget script...${NC}"
     
     cat > "$GADGET_SCRIPT" << 'GADGETEOF'
 #!/bin/bash
@@ -592,7 +507,7 @@ GADGETEOF
     echo -e "  ${GREEN}✓${NC} Gadget script created"
     
     # Create systemd service
-    echo -e "\n${YELLOW}[8/10] Creating systemd service...${NC}"
+    echo -e "\n${YELLOW}[7/9] Creating systemd service...${NC}"
     
     cat > "$SERVICE_FILE" << 'SERVICEEOF'
 [Unit]
@@ -617,7 +532,7 @@ SERVICEEOF
     echo -e "  ${GREEN}✓${NC} Service enabled"
     
     # Configure network
-    echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
+    echo -e "\n${YELLOW}[8/9] Configuring USB network and DHCP...${NC}"
     sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
 
@@ -879,7 +794,7 @@ EOF
     echo -e "  ${GREEN}✓${NC} Web server configured"
     
     # Final check
-    echo -e "\n${YELLOW}[10/10] Verifying installation...${NC}"
+    echo -e "\n${YELLOW}[9/9] Verifying installation...${NC}"
     echo -e "  ${GREEN}✓${NC} Boot config verified"
     echo -e "  ${GREEN}✓${NC} Service: $(systemctl is-enabled picycle.service 2>/dev/null)"
     echo -e "  ${GREEN}✓${NC} Storage: ${storage_mb}MB"
@@ -902,7 +817,95 @@ EOF
 
     read -p "Reboot now? (y/n): " -n 1 -r
     echo
-    [[ $REPLY =~ ^[Yy]$ ]] && reboot
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Configure WiFi AP before reboot
+        echo -e "\n${CYAN}${BOLD}Configuring WiFi Access Point before reboot...${NC}"
+
+        # Get password from user
+        local wifi_pass=""
+        while true; do
+            read -sp "Enter WiFi AP password (8-63 characters): " wifi_pass
+            echo ""
+            if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
+                echo -e "${RED}Password must be 8-63 characters${NC}"
+                continue
+            fi
+            read -sp "Confirm password: " wifi_pass_confirm
+            echo ""
+            if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
+                echo -e "${RED}Passwords do not match${NC}"
+                continue
+            fi
+            break
+        done
+
+        # Install hostapd if needed
+        echo -e "${YELLOW}Installing hostapd...${NC}"
+        apt install -y hostapd >/dev/null 2>&1 || true
+        systemctl stop hostapd 2>/dev/null || true
+
+        # Disconnect from home WiFi
+        echo -e "${YELLOW}Disconnecting from home WiFi...${NC}"
+        wpa_cli -i wlan0 disconnect 2>/dev/null || true
+        wpa_cli -i wlan0 terminate 2>/dev/null || true
+        systemctl stop wpa_supplicant 2>/dev/null || true
+
+        # Create hostapd config
+        echo -e "${YELLOW}Configuring Access Point...${NC}"
+        mkdir -p /etc/hostapd
+        cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
+interface=wlan0
+driver=nl80211
+ssid=PiCycle
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=$wifi_pass
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+HOSTAPDEOF
+        chmod 600 /etc/hostapd/hostapd.conf
+
+        # Point hostapd to config
+        if [ -f /etc/default/hostapd ]; then
+            sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+        fi
+
+        # Create dnsmasq config for wlan0 AP
+        mkdir -p /etc/dnsmasq.d
+        cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
+interface=wlan0
+bind-interfaces
+dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+WLANEOF
+
+        # Add wlan0 static IP to dhcpcd.conf
+        sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
+        cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
+
+# PiCycle-AP
+interface wlan0
+static ip_address=192.168.4.1/24
+nohook wpa_supplicant
+
+WLANAPEOF
+
+        # Enable hostapd to start on boot
+        systemctl unmask hostapd 2>/dev/null || true
+        systemctl enable hostapd 2>/dev/null || true
+
+        echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
+        echo -e "${YELLOW}Rebooting now...${NC}"
+        sleep 2
+        reboot
+    fi
 }
 
 # Diagnostic report
