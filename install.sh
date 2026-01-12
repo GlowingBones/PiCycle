@@ -206,7 +206,18 @@ install_picycle() {
     local storage_mb=8192
     echo -e "  ${GREEN}✓${NC} Storage size: 8 GB"
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
-    
+
+    # Check for existing corrupted storage image and remove it
+    if [ -f /piusb.img ]; then
+        if /sbin/fsck.vfat -n /piusb.img >/dev/null 2>&1; then
+            echo -e "  ${GREEN}✓${NC} Existing storage image is valid"
+        else
+            echo -e "  ${YELLOW}⚠${NC} Existing storage image corrupted, removing..."
+            rm -f /piusb.img
+            echo -e "  ${GREEN}✓${NC} Corrupted image removed (will be recreated on boot)"
+        fi
+    fi
+
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
     if [ "$available_mb" -lt "$storage_mb" ]; then
         echo -e "  ${YELLOW}⚠${NC} Warning: Only ${available_mb}MB available"
@@ -359,7 +370,16 @@ STORAGE="/piusb.img"
 STORAGE_SIZE=8192
 [ -f /etc/picycle/storage_size ] && STORAGE_SIZE=$(cat /etc/picycle/storage_size)
 
-# Create storage image FIRST if it doesn't exist
+# Check if existing image is valid FAT32, recreate if corrupted
+if [ -f "$STORAGE" ]; then
+    log "Verifying existing storage image..."
+    if ! /sbin/fsck.vfat -n "$STORAGE" >/dev/null 2>&1; then
+        log "WARNING: Storage image corrupted, recreating..."
+        rm -f "$STORAGE"
+    fi
+fi
+
+# Create storage image if it doesn't exist (or was just deleted due to corruption)
 if [ ! -f "$STORAGE" ]; then
     log "Creating ${STORAGE_SIZE}MB storage image (this may take a while)..."
     dd if=/dev/zero of="$STORAGE" bs=1M count="$STORAGE_SIZE" status=progress 2>&1 || {
