@@ -122,6 +122,7 @@ HOSTAPDEOF
 interface wlan0
 static ip_address=192.168.4.1/24
 nohook wpa_supplicant
+
 DHCPCDEOF
 
     # Configure dnsmasq for WiFi AP DHCP
@@ -133,6 +134,7 @@ bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
+dhcp-leasefile=/var/lib/misc/dnsmasq.wlan0.leases
 DNSMASQWLANEOF
 
     # Unmask and enable hostapd
@@ -462,15 +464,15 @@ DNSMASQEOF
 mkdir -p /var/lib/misc
 touch /var/lib/misc/dnsmasq.usb0.leases
 
-# Kill any existing dnsmasq on usb0 and restart
-pkill -f "dnsmasq.*usb0" 2>/dev/null || true
+# Kill any existing dnsmasq and restart
+pkill dnsmasq 2>/dev/null || true
 sleep 1
 
-# Start dnsmasq for usb0 only
+# Start dnsmasq for all configured interfaces (usb0 and wlan0)
 if ip link show usb0 &>/dev/null; then
-    /usr/sbin/dnsmasq --conf-file=/etc/dnsmasq.d/usb0.conf --pid-file=/run/dnsmasq.usb0.pid &
+    /usr/sbin/dnsmasq --conf-dir=/etc/dnsmasq.d --pid-file=/run/dnsmasq.picycle.pid &
     sleep 1
-    if pgrep -f "dnsmasq.*usb0" > /dev/null; then
+    if pgrep dnsmasq > /dev/null; then
         log "DHCP server started successfully"
     else
         log "WARNING: DHCP server may not have started"
@@ -532,7 +534,8 @@ SERVICEEOF
     
     # Configure network
     echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
-    sed -i '/^# PiCycle/,/^$/d' /etc/dhcpcd.conf
+    # Only remove USB network config, preserve WiFi AP config
+    sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
 
     cat >> /etc/dhcpcd.conf << 'NETEOF'
@@ -541,6 +544,7 @@ SERVICEEOF
 interface usb0
 static ip_address=10.55.0.1/24
 nohook wpa_supplicant
+
 NETEOF
 
     # Create dnsmasq config directory
@@ -808,9 +812,7 @@ EOF
     echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
     echo -e "  • Via WiFi AP: ${YELLOW}ssh pi@192.168.4.1${NC}"
     echo -e ""
-    echo -e "${CYAN}Test HID keyboard:${NC}"
-    echo -e "  ${YELLOW}sudo python3 picycle.py${NC}\n"
-    
+
     read -p "Reboot now? (y/n): " -n 1 -r
     echo
     [[ $REPLY =~ ^[Yy]$ ]] && reboot
