@@ -138,9 +138,93 @@ EOF
     read -p "Press Enter to continue..."
 }
 
-# Configure WiFi - skipped, use existing WiFi from Raspberry Pi Imager
+# Configure WiFi Access Point (broadcasting SSID: PiCycle)
 configure_wifi() {
-    echo -e "${CYAN}Using existing WiFi configuration${NC}"
+    echo -e "\n${CYAN}${BOLD}WiFi Access Point Configuration${NC}"
+    echo -e "${YELLOW}Setting up WiFi Access Point (SSID: PiCycle)${NC}\n"
+
+    # Get password from user
+    local wifi_pass=""
+    while true; do
+        read -sp "Enter WiFi AP password (8-63 characters): " wifi_pass
+        echo ""
+        if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
+            echo -e "${RED}Password must be 8-63 characters${NC}"
+            continue
+        fi
+        read -sp "Confirm password: " wifi_pass_confirm
+        echo ""
+        if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
+            echo -e "${RED}Passwords do not match${NC}"
+            continue
+        fi
+        break
+    done
+
+    # Install hostapd for AP mode
+    echo -e "${YELLOW}Installing hostapd...${NC}"
+    apt install -y hostapd >/dev/null 2>&1 || true
+
+    # Stop hostapd during configuration (don't stop wpa_supplicant - user is connected!)
+    systemctl stop hostapd 2>/dev/null || true
+
+    # Create hostapd directory and config
+    mkdir -p /etc/hostapd
+    cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
+interface=wlan0
+driver=nl80211
+ssid=PiCycle
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=$wifi_pass
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+HOSTAPDEOF
+    chmod 600 /etc/hostapd/hostapd.conf
+
+    # Point hostapd to config file
+    if [ -f /etc/default/hostapd ]; then
+        sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+    fi
+
+    # Create dnsmasq config for wlan0 (separate from usb0)
+    mkdir -p /etc/dnsmasq.d
+    cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANDHCPEOF'
+# PiCycle WiFi AP DHCP - DO NOT EDIT
+interface=wlan0
+bind-interfaces
+dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+WLANDHCPEOF
+
+    # Add wlan0 static IP to dhcpcd.conf (will be used after reboot)
+    # First remove any existing wlan0 AP config
+    sed -i '/^# PiCycle-AP wlan0/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
+
+    # Append wlan0 AP config at the end
+    cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
+
+# PiCycle-AP wlan0
+interface wlan0
+static ip_address=192.168.4.1/24
+nohook wpa_supplicant
+
+WLANAPEOF
+
+    # Unmask and enable hostapd (will start on reboot)
+    systemctl unmask hostapd 2>/dev/null || true
+    systemctl enable hostapd 2>/dev/null || true
+
+    echo -e "${GREEN}✓ WiFi Access Point configured (activates after reboot)${NC}"
+    echo -e "  ${CYAN}SSID:${NC} PiCycle"
+    echo -e "  ${CYAN}IP:${NC} 192.168.4.1"
 }
 
 # Install PiCycle
@@ -530,7 +614,8 @@ SERVICEEOF
     
     # Configure network
     echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
-    sed -i '/^# PiCycle/,/^$/d' /etc/dhcpcd.conf
+    # Remove ONLY USB network config (not WiFi AP config)
+    sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
 
     cat >> /etc/dhcpcd.conf << 'NETEOF'
@@ -539,6 +624,7 @@ SERVICEEOF
 interface usb0
 static ip_address=10.55.0.1/24
 nohook wpa_supplicant
+
 NETEOF
 
     # Create dnsmasq config directory
@@ -804,7 +890,11 @@ EOF
     echo -e ""
     echo -e "${CYAN}SSH Access:${NC}"
     echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
-    echo -e "  • Via WiFi: ${YELLOW}ssh pi@<wifi-ip>${NC}"
+    echo -e "  • Via WiFi AP: ${YELLOW}ssh pi@192.168.4.1${NC}"
+    echo -e ""
+    echo -e "${CYAN}WiFi Access Point:${NC}"
+    echo -e "  • SSID: ${YELLOW}PiCycle${NC}"
+    echo -e "  • IP: ${YELLOW}192.168.4.1${NC}"
     echo -e ""
 
     read -p "Reboot now? (y/n): " -n 1 -r
