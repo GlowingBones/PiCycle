@@ -8,7 +8,9 @@ PiCycle (Raspberry Pi Zero 2W as a HID keyboard, Mass storage device, and Networ
 
 To build this project you will need:
   ⦁	Pi Zero 2 WH-Pi Zero 2 W (https://a.co/d/dgyNJGX)
+  
   ⦁	USB Dongle Expansion Board with Case (https://a.co/d/4QbcUZW)
+  
   ⦁	TF Card 64GB with Adapter, High Speed Memory Card, UHS-I C10 A1 (https://a.co/d/89mxLgg)
 
 Step by Step installation:
