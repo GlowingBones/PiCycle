@@ -16,7 +16,7 @@ Style notes:
 </p>
 
 <p align="center">
-  <strong><span style="color: red;"><B>Status:</B></span></strong> work in progress. Expect breaking changes.
+  <strong><B>Status:</B></strong> work in progress. Expect breaking changes.
 </p>
 
 ## What it does
