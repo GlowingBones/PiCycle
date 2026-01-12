@@ -82,11 +82,12 @@ configure_wifi() {
     echo -e "${YELLOW}Installing Access Point packages...${NC}"
     apt install -y hostapd >/dev/null 2>&1 || true
 
-    # Stop services during configuration
+    # Don't stop wpa_supplicant - user may be connected via WiFi for initial setup
+    # The switch to AP mode will happen on reboot
     systemctl stop hostapd 2>/dev/null || true
-    systemctl stop wpa_supplicant 2>/dev/null || true
 
     # Configure hostapd for hidden AP
+    mkdir -p /etc/hostapd
     cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
 interface=wlan0
 driver=nl80211
@@ -124,6 +125,7 @@ nohook wpa_supplicant
 DHCPCDEOF
 
     # Configure dnsmasq for WiFi AP DHCP
+    mkdir -p /etc/dnsmasq.d
     cat > /etc/dnsmasq.d/wlan0.conf << 'DNSMASQWLANEOF'
 # PiCycle WiFi AP DHCP
 interface=wlan0
