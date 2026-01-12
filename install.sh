@@ -8,6 +8,34 @@
 
 set -e
 
+# Master install log - captures everything
+readonly INSTALL_LOG="/var/log/picycle_install.log"
+
+# Initialize logging - log all output to file AND terminal
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+echo ""
+echo "================================================================================"
+echo "PiCycle Installation Log - Started: $(date)"
+echo "================================================================================"
+echo ""
+
+# Logging function with timestamps
+log_step() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$INSTALL_LOG"
+}
+
+log_error() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$INSTALL_LOG"
+}
+
+log_success() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] SUCCESS: $1" | tee -a "$INSTALL_LOG"
+}
+
+log_warning() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1" | tee -a "$INSTALL_LOG"
+}
+
 # Color definitions
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
@@ -140,27 +168,36 @@ EOF
 
 # Install PiCycle
 install_picycle() {
+    log_step "=== STARTING PICYCLE INSTALLATION ==="
     echo -e "\n${MAGENTA}${BOLD}[*] Installing PiCycle USB Composite Gadget${NC}\n"
-    
+
     mkdir -p "$CONFIG_DIR" "$BACKUP_DIR"
-    
+    log_step "Created directories: $CONFIG_DIR, $BACKUP_DIR"
+
     # Backup existing files
+    log_step "[STEP 1/9] Creating backups"
     echo -e "${YELLOW}[1/9] Creating backups...${NC}"
     for file in "$BOOT_DIR/config.txt" "$BOOT_DIR/cmdline.txt" "/etc/dhcpcd.conf" "/etc/modules"; do
         if [ -f "$file" ] && [ ! -f "$BACKUP_DIR/$(basename "$file").bak" ]; then
             cp "$file" "$BACKUP_DIR/$(basename "$file").bak"
+            log_success "Backed up $file"
             echo -e "  ${GREEN}✓${NC} Backed up $(basename "$file")"
+        else
+            log_step "Skipped backup for $file (already exists or file missing)"
         fi
     done
     
     # Configure boot files
+    log_step "[STEP 2/9] Configuring boot parameters"
     echo -e "\n${YELLOW}[2/9] Configuring boot parameters...${NC}"
-    
+
     sed -i '/^dtoverlay=dwc2/d' "$BOOT_DIR/config.txt"
     echo "dtoverlay=dwc2,dr_mode=peripheral" >> "$BOOT_DIR/config.txt"
+    log_success "config.txt: added dtoverlay=dwc2,dr_mode=peripheral"
     echo -e "  ${GREEN}✓${NC} config.txt configured"
-    
+
     local cmdline=$(cat "$BOOT_DIR/cmdline.txt")
+    log_step "Original cmdline.txt: $cmdline"
     # Remove any existing modules-load=dwc2 and clean up extra spaces
     cmdline=$(echo "$cmdline" | sed 's/modules-load=dwc2[^ ]*//g' | sed 's/  */ /g' | sed 's/^ //' | sed 's/ $//')
     # Add modules-load=dwc2 before rootwait if it exists, otherwise append it
@@ -170,31 +207,42 @@ install_picycle() {
         cmdline="$cmdline modules-load=dwc2"
     fi
     echo "$cmdline" > "$BOOT_DIR/cmdline.txt"
+    log_success "cmdline.txt updated: $cmdline"
     echo -e "  ${GREEN}✓${NC} cmdline.txt configured"
     
     # Configure modules
+    log_step "[STEP 3/9] Configuring kernel modules"
     echo -e "\n${YELLOW}[3/9] Configuring kernel modules...${NC}"
     sed -i '/^dwc2$/d' /etc/modules
     sed -i '/^libcomposite$/d' /etc/modules
     echo -e "dwc2\nlibcomposite" >> /etc/modules
+    log_success "Added dwc2 and libcomposite to /etc/modules"
     echo -e "  ${GREEN}✓${NC} Modules configured"
     
     # Install packages
+    log_step "[STEP 4/9] Installing required packages"
     echo -e "\n${YELLOW}[4/9] Installing required packages...${NC}"
+    log_step "Running apt update..."
     apt update -qq
+    log_step "Installing: dosfstools avahi-daemon jq dnsmasq"
     apt install -y dosfstools avahi-daemon jq dnsmasq 2>&1 | grep -E "Setting up|already" || true
     # Stop dnsmasq default service - we'll configure it for usb0 only
     systemctl stop dnsmasq 2>/dev/null || true
     systemctl disable dnsmasq 2>/dev/null || true
+    log_success "Packages installed, dnsmasq default service disabled"
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
     # Configure storage size (always 8GB)
+    log_step "[STEP 5/9] Creating USB mass storage"
     echo -e "\n${YELLOW}[5/9] Creating USB mass storage (8GB)...${NC}"
     local storage_mb=8192
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
+    log_step "Storage size set to ${storage_mb}MB"
 
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
+    log_step "Available disk space: ${available_mb}MB"
     if [ "$available_mb" -lt "$storage_mb" ]; then
+        log_warning "Insufficient disk space: ${available_mb}MB available, ${storage_mb}MB required"
         echo -e "  ${YELLOW}⚠${NC} Warning: Only ${available_mb}MB available"
         read -p "Continue? (y/n): " -n 1 -r
         echo
@@ -203,20 +251,25 @@ install_picycle() {
 
     # Create and format storage image NOW during install
     if [ -f /piusb.img ]; then
+        log_step "Removing existing storage image..."
         echo -e "  ${YELLOW}Removing old storage image...${NC}"
         rm -f /piusb.img
     fi
+    log_step "Creating ${storage_mb}MB storage image..."
     echo -e "  ${CYAN}Creating ${storage_mb}MB storage image (this takes several minutes)...${NC}"
     dd if=/dev/zero of=/piusb.img bs=1M count="$storage_mb" status=progress
     sync
+    log_step "Formatting storage as FAT32..."
     echo -e "  ${CYAN}Formatting as FAT32...${NC}"
     /sbin/mkfs.vfat -F 32 -n "PICYCLE" /piusb.img
     sync
+    log_success "Storage image created: /piusb.img (${storage_mb}MB FAT32)"
     echo -e "  ${GREEN}✓${NC} Storage image created and formatted"
     
     # Create gadget script
+    log_step "[STEP 6/9] Creating USB gadget script"
     echo -e "\n${YELLOW}[6/9] Creating USB gadget script...${NC}"
-    
+
     cat > "$GADGET_SCRIPT" << 'GADGETEOF'
 #!/bin/bash
 set -e
@@ -225,9 +278,11 @@ exec 2>&1
 log() { echo "[$(date '+%H:%M:%S')] $1"; }
 
 log "PiCycle gadget starting..."
+log "Waiting for system to stabilize..."
 
-# Wait for system to be ready
-sleep 3
+# Wait for system to be fully ready - this reduces Windows USB errors
+# during boot by ensuring Pi is stable before USB gadget enumeration
+sleep 5
 
 # Load modules
 log "Loading libcomposite module..."
@@ -237,13 +292,13 @@ sleep 2
 # Wait for UDC
 log "Waiting for UDC controller..."
 UDC=""
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
     UDC=$(ls /sys/class/udc/ 2>/dev/null | head -n1)
     [ -n "$UDC" ] && break
     sleep 1
 done
 if [ -z "$UDC" ]; then
-    log "ERROR: No UDC controller found after 20 seconds"
+    log "ERROR: No UDC controller found after 30 seconds"
     exit 1
 fi
 log "Found UDC: $UDC"
@@ -340,6 +395,8 @@ fi
 # Set MAC addresses
 echo "48:6f:73:74:50:43" > functions/rndis.usb0/host_addr
 echo "42:61:64:55:53:42" > functions/rndis.usb0/dev_addr
+log "RNDIS function created"
+sleep 1
 
 # ============ Function 2: HID Keyboard ============
 log "Creating HID keyboard function..."
@@ -351,6 +408,8 @@ echo 8 > functions/hid.usb0/report_length # 8-byte reports
 # Standard USB HID keyboard report descriptor (63 bytes)
 # This is the standard boot keyboard descriptor
 echo -ne '\x05\x01\x09\x06\xa1\x01\x05\x07\x19\xe0\x29\xe7\x15\x00\x25\x01\x75\x01\x95\x08\x81\x02\x95\x01\x75\x08\x81\x03\x95\x05\x75\x01\x05\x08\x19\x01\x29\x05\x91\x02\x95\x01\x75\x03\x91\x03\x95\x06\x75\x08\x15\x00\x25\x65\x05\x07\x19\x00\x29\x65\x81\x00\xc0' > functions/hid.usb0/report_desc
+log "HID keyboard function created"
+sleep 1
 
 # ============ Function 3: Mass Storage ============
 log "Creating Mass Storage function..."
@@ -407,6 +466,7 @@ echo "$STORAGE" > functions/mass_storage.usb0/lun.0/file || {
     exit 1
 }
 log "Mass storage bound to $STORAGE"
+sleep 1
 
 # ============ Link functions to config ============
 log "Linking functions to config..."
@@ -415,6 +475,12 @@ ln -sf functions/rndis.usb0 configs/c.1/
 ln -sf functions/hid.usb0 configs/c.1/
 ln -sf functions/mass_storage.usb0 configs/c.1/
 ln -sf configs/c.1 os_desc/
+log "All functions linked to configuration"
+
+# Pause before enabling gadget - ensures all configurations are stable
+# This is critical for reducing Windows USB enumeration errors
+log "Preparing to enable gadget (waiting for stability)..."
+sleep 3
 
 # ============ Enable gadget ============
 log "Enabling gadget on $UDC..."
@@ -424,7 +490,9 @@ echo "$UDC" > UDC || {
 }
 
 log "Gadget enabled successfully"
-sleep 2
+# Wait for USB enumeration to complete on host side
+# This helps Windows properly detect all functions before we configure network
+sleep 5
 
 # ============ Configure USB network interface ============
 log "Configuring usb0 network interface..."
@@ -504,9 +572,11 @@ log "=========================================="
 GADGETEOF
 
     chmod +x "$GADGET_SCRIPT"
+    log_success "Created gadget script: $GADGET_SCRIPT"
     echo -e "  ${GREEN}✓${NC} Gadget script created"
-    
+
     # Create systemd service
+    log_step "[STEP 7/9] Creating systemd service"
     echo -e "\n${YELLOW}[7/9] Creating systemd service...${NC}"
     
     cat > "$SERVICE_FILE" << 'SERVICEEOF'
@@ -529,9 +599,11 @@ SERVICEEOF
 
     systemctl daemon-reload
     systemctl enable picycle.service
+    log_success "Created and enabled picycle.service"
     echo -e "  ${GREEN}✓${NC} Service enabled"
-    
+
     # Configure network
+    log_step "[STEP 8/9] Configuring USB network and DHCP"
     echo -e "\n${YELLOW}[8/9] Configuring USB network and DHCP...${NC}"
     sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
@@ -562,10 +634,12 @@ log-dhcp
 DNSMASQEOF
 
     systemctl enable ssh 2>/dev/null || true
+    log_success "USB network configured (10.55.0.1/24) with DHCP server"
     echo -e "  ${GREEN}✓${NC} Network and DHCP configured"
 
 
     # Web server (lightweight) + PHP for http://10.55.0.1/
+    log_step "[STEP 9/9] Configuring web server and PHP"
     echo -e "\n${YELLOW}[WEB] Configuring web server and PHP...${NC}"
 
     # Determine primary non-root user for ~/PiCycle/assets and ~/www
@@ -791,14 +865,18 @@ EOF
         systemctl restart picycle-web.service 2>/dev/null || true
     fi
 
+    log_success "Web server configured (uhttpd/PHP)"
     echo -e "  ${GREEN}✓${NC} Web server configured"
-    
+
     # Final check
+    log_step "[VERIFICATION] Verifying installation"
     echo -e "\n${YELLOW}[9/9] Verifying installation...${NC}"
     echo -e "  ${GREEN}✓${NC} Boot config verified"
     echo -e "  ${GREEN}✓${NC} Service: $(systemctl is-enabled picycle.service 2>/dev/null)"
     echo -e "  ${GREEN}✓${NC} Storage: ${storage_mb}MB"
-    
+
+    log_success "=== PICYCLE INSTALLATION COMPLETE ==="
+    log_step "Log file saved to: $INSTALL_LOG"
     echo -e "\n${GREEN}${BOLD}✓ PiCycle installation complete!${NC}\n"
     echo -e "${CYAN}${BOLD}IMPORTANT:${NC} ${YELLOW}Reboot required${NC}"
     echo -e "${CYAN}After reboot, Windows should show:${NC}"
@@ -819,12 +897,14 @@ EOF
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Configure WiFi AP before reboot
+        log_step "=== WIFI AP CONFIGURATION STARTING ==="
         echo -e "\n${CYAN}${BOLD}Configuring WiFi Access Point before reboot...${NC}"
 
-        # Create log file for WiFi AP setup
+        # Create log file for WiFi AP setup (also logged to master log)
         local ap_log="/var/log/picycle_ap_setup.log"
         echo "=== PiCycle WiFi AP Setup Log ===" > "$ap_log"
         echo "Started: $(date)" >> "$ap_log"
+        echo "Note: This log is also captured in $INSTALL_LOG" >> "$ap_log"
 
         # Get password from user
         local wifi_pass=""
@@ -843,75 +923,126 @@ EOF
             fi
             break
         done
-        echo "Password obtained (length: ${#wifi_pass})" >> "$ap_log"
+        log_step "WiFi AP password obtained (length: ${#wifi_pass})"
 
         # Install hostapd if needed
         echo -e "${YELLOW}Installing hostapd...${NC}"
-        echo "Installing hostapd..." >> "$ap_log"
-        apt install -y hostapd >> "$ap_log" 2>&1 || echo "apt install hostapd failed" >> "$ap_log"
+        log_step "Installing hostapd package..."
+        apt install -y hostapd >> "$ap_log" 2>&1 || log_error "apt install hostapd failed"
 
         # Stop hostapd for now
-        systemctl stop hostapd 2>/dev/null
-        echo "hostapd stopped" >> "$ap_log"
+        systemctl stop hostapd 2>/dev/null || true
+        log_step "hostapd service stopped"
 
-        # === CRITICAL: Completely disable wpa_supplicant ===
-        echo -e "${YELLOW}Disabling wpa_supplicant (home WiFi)...${NC}"
-        echo "" >> "$ap_log"
-        echo "=== Disabling wpa_supplicant ===" >> "$ap_log"
+        # === CRITICAL: Completely disable ALL WiFi client functionality ===
+        echo -e "${YELLOW}Disabling WiFi client mode (home WiFi)...${NC}"
+        log_step "=== DISABLING WIFI CLIENT MODE ==="
 
-        # Step 1: Disconnect current connection
-        echo "Step 1: Disconnecting wpa_cli..." >> "$ap_log"
-        wpa_cli -i wlan0 disconnect >> "$ap_log" 2>&1 || echo "  wpa_cli disconnect failed (may be ok)" >> "$ap_log"
+        # Step 1: Take down the wlan0 interface immediately
+        log_step "Step 1: Taking down wlan0 interface..."
+        ip link set wlan0 down 2>/dev/null || true
 
-        # Step 2: Terminate wpa_supplicant process
-        echo "Step 2: Terminating wpa_cli..." >> "$ap_log"
-        wpa_cli -i wlan0 terminate >> "$ap_log" 2>&1 || echo "  wpa_cli terminate failed (may be ok)" >> "$ap_log"
+        # Step 2: Disconnect via wpa_cli
+        log_step "Step 2: Disconnecting wpa_cli..."
+        wpa_cli -i wlan0 disconnect 2>/dev/null || true
 
-        # Step 3: Stop wpa_supplicant service
-        echo "Step 3: Stopping wpa_supplicant service..." >> "$ap_log"
-        systemctl stop wpa_supplicant >> "$ap_log" 2>&1 || echo "  stop failed" >> "$ap_log"
+        # Step 3: Terminate wpa_supplicant
+        log_step "Step 3: Terminating wpa_supplicant via wpa_cli..."
+        wpa_cli -i wlan0 terminate 2>/dev/null || true
+        sleep 1
 
-        # Step 4: Disable wpa_supplicant service so it doesn't start on boot
-        echo "Step 4: Disabling wpa_supplicant service..." >> "$ap_log"
-        systemctl disable wpa_supplicant >> "$ap_log" 2>&1 || echo "  disable failed" >> "$ap_log"
+        # Step 4: Stop wpa_supplicant service
+        log_step "Step 4: Stopping wpa_supplicant service..."
+        systemctl stop wpa_supplicant 2>/dev/null || true
+        systemctl stop wpa_supplicant@wlan0 2>/dev/null || true
 
-        # Step 5: Mask wpa_supplicant to prevent it from being started
-        echo "Step 5: Masking wpa_supplicant service..." >> "$ap_log"
-        systemctl mask wpa_supplicant >> "$ap_log" 2>&1 || echo "  mask failed" >> "$ap_log"
+        # Step 5: Disable wpa_supplicant service
+        log_step "Step 5: Disabling wpa_supplicant service..."
+        systemctl disable wpa_supplicant 2>/dev/null || true
+        systemctl disable wpa_supplicant@wlan0 2>/dev/null || true
 
-        # Step 6: Kill any remaining wpa_supplicant processes
-        echo "Step 6: Killing any remaining wpa_supplicant processes..." >> "$ap_log"
-        pkill -9 wpa_supplicant >> "$ap_log" 2>&1 || echo "  no processes to kill" >> "$ap_log"
+        # Step 6: Mask wpa_supplicant to prevent ANY start
+        log_step "Step 6: Masking wpa_supplicant service..."
+        systemctl mask wpa_supplicant 2>/dev/null || true
+        systemctl mask wpa_supplicant@wlan0 2>/dev/null || true
 
-        # Step 7: Backup and remove wpa_supplicant.conf so it can't reconnect
-        echo "Step 7: Backing up wpa_supplicant.conf..." >> "$ap_log"
+        # Step 7: Kill any remaining wpa_supplicant processes forcefully
+        log_step "Step 7: Force killing any wpa_supplicant processes..."
+        pkill -9 wpa_supplicant 2>/dev/null || true
+        killall -9 wpa_supplicant 2>/dev/null || true
+        sleep 1
+
+        # Step 8: Backup and completely remove wpa_supplicant.conf networks
+        log_step "Step 8: Removing WiFi network configurations..."
         if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-            cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf.backup.$(date +%Y%m%d%H%M%S)
-            # Create empty wpa_supplicant.conf (no networks)
+            cp /etc/wpa_supplicant/wpa_supplicant.conf "/etc/wpa_supplicant/wpa_supplicant.conf.backup.$(date +%Y%m%d%H%M%S)"
+            log_step "Backed up wpa_supplicant.conf"
+            # Create empty config with NO networks
             cat > /etc/wpa_supplicant/wpa_supplicant.conf << 'WPAEOF'
 ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
-update_config=1
+update_config=0
 country=US
-# Networks removed for AP mode - backup saved as wpa_supplicant.conf.backup.*
+# ALL NETWORKS REMOVED - WiFi is in AP mode only
+# Original config backed up as wpa_supplicant.conf.backup.*
 WPAEOF
-            echo "  wpa_supplicant.conf backed up and cleared" >> "$ap_log"
-        else
-            echo "  wpa_supplicant.conf not found" >> "$ap_log"
+            log_success "wpa_supplicant.conf cleared of all networks"
         fi
 
-        # Verify wpa_supplicant is stopped
-        if pgrep wpa_supplicant > /dev/null; then
-            echo "WARNING: wpa_supplicant still running!" >> "$ap_log"
-            echo -e "${RED}Warning: wpa_supplicant still running${NC}"
+        # Step 9: Also remove any wpa_supplicant interface-specific configs
+        log_step "Step 9: Removing interface-specific wpa_supplicant configs..."
+        rm -f /etc/wpa_supplicant/wpa_supplicant-wlan0.conf 2>/dev/null || true
+        rm -f /var/run/wpa_supplicant/wlan0 2>/dev/null || true
+
+        # Step 10: Disable NetworkManager management of wlan0 (if NetworkManager exists)
+        log_step "Step 10: Checking for NetworkManager..."
+        if command -v nmcli &>/dev/null; then
+            log_step "NetworkManager found, setting wlan0 to unmanaged..."
+            nmcli device set wlan0 managed no 2>/dev/null || true
+
+            # Create NetworkManager config to ignore wlan0
+            mkdir -p /etc/NetworkManager/conf.d
+            cat > /etc/NetworkManager/conf.d/99-picycle-ignore-wlan0.conf << 'NMEOF'
+[keyfile]
+unmanaged-devices=interface-name:wlan0
+NMEOF
+            log_success "NetworkManager configured to ignore wlan0"
         else
-            echo "SUCCESS: wpa_supplicant stopped" >> "$ap_log"
+            log_step "NetworkManager not found (OK)"
+        fi
+
+        # Step 11: Use rfkill to ensure WiFi is unblocked (for AP mode)
+        log_step "Step 11: Ensuring WiFi is unblocked via rfkill..."
+        rfkill unblock wifi 2>/dev/null || true
+        rfkill unblock wlan 2>/dev/null || true
+
+        # Step 12: Remove any dhcpcd hooks for wpa_supplicant on wlan0
+        log_step "Step 12: Configuring dhcpcd to not use wpa_supplicant on wlan0..."
+        # This is already done via nohook, but let's also create a dhcpcd hook file
+        mkdir -p /etc/dhcpcd.enter-hook.d
+        cat > /etc/dhcpcd.enter-hook.d/10-picycle-no-wlan0-client << 'HOOKEOF'
+#!/bin/bash
+# PiCycle: Prevent dhcpcd from managing wlan0 as WiFi client
+if [ "$interface" = "wlan0" ]; then
+    # wlan0 is managed by hostapd for AP mode, not dhcpcd for client mode
+    exit 0
+fi
+HOOKEOF
+        chmod +x /etc/dhcpcd.enter-hook.d/10-picycle-no-wlan0-client 2>/dev/null || true
+
+        # Verify wpa_supplicant is completely stopped
+        sleep 2
+        if pgrep -x wpa_supplicant > /dev/null; then
+            log_error "wpa_supplicant STILL RUNNING after all disable steps!"
+            echo -e "${RED}Warning: wpa_supplicant still running - forcing kill${NC}"
+            pkill -9 wpa_supplicant 2>/dev/null || true
+        else
+            log_success "wpa_supplicant completely disabled"
             echo -e "${GREEN}✓ wpa_supplicant disabled${NC}"
         fi
 
         # Create hostapd config
         echo -e "${YELLOW}Configuring Access Point...${NC}"
-        echo "" >> "$ap_log"
-        echo "=== Creating hostapd config ===" >> "$ap_log"
+        log_step "=== CREATING HOSTAPD CONFIGURATION ==="
         mkdir -p /etc/hostapd
         cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
 interface=wlan0
@@ -930,17 +1061,16 @@ wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 HOSTAPDEOF
         chmod 600 /etc/hostapd/hostapd.conf
-        echo "hostapd.conf created" >> "$ap_log"
+        log_success "hostapd.conf created with SSID=PiCycle"
 
         # Point hostapd to config
         if [ -f /etc/default/hostapd ]; then
             sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-            echo "Updated /etc/default/hostapd" >> "$ap_log"
+            log_step "Updated /etc/default/hostapd"
         fi
 
         # Create dnsmasq config for wlan0 AP
-        echo "" >> "$ap_log"
-        echo "=== Creating dnsmasq config for wlan0 ===" >> "$ap_log"
+        log_step "=== CREATING DNSMASQ CONFIG FOR WLAN0 ==="
         mkdir -p /etc/dnsmasq.d
         cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
 # PiCycle WiFi AP DHCP
@@ -950,11 +1080,10 @@ dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
 WLANEOF
-        echo "wlan0-ap.conf created" >> "$ap_log"
+        log_success "wlan0-ap.conf created (DHCP: 192.168.4.10-100)"
 
         # Add wlan0 static IP to dhcpcd.conf
-        echo "" >> "$ap_log"
-        echo "=== Configuring dhcpcd.conf for wlan0 ===" >> "$ap_log"
+        log_step "=== CONFIGURING DHCPCD FOR WLAN0 AP MODE ==="
         sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
         cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
 
@@ -964,32 +1093,71 @@ static ip_address=192.168.4.1/24
 nohook wpa_supplicant
 
 WLANAPEOF
-        echo "dhcpcd.conf updated for wlan0" >> "$ap_log"
+        log_success "dhcpcd.conf updated: wlan0 = 192.168.4.1/24, nohook wpa_supplicant"
 
         # Enable hostapd to start on boot
-        echo "" >> "$ap_log"
-        echo "=== Enabling hostapd service ===" >> "$ap_log"
-        systemctl unmask hostapd >> "$ap_log" 2>&1 || echo "unmask failed" >> "$ap_log"
-        systemctl enable hostapd >> "$ap_log" 2>&1 || echo "enable failed" >> "$ap_log"
+        log_step "=== ENABLING HOSTAPD SERVICE ==="
+        systemctl unmask hostapd 2>/dev/null || true
+        systemctl enable hostapd 2>/dev/null || true
+        log_step "hostapd service unmasked and enabled"
+
+        # Create a boot script to ensure hostapd starts cleanly
+        log_step "Creating hostapd pre-start script..."
+        cat > /usr/bin/picycle_ap_prestart.sh << 'PRESTARTEOF'
+#!/bin/bash
+# PiCycle: Ensure wlan0 is ready for hostapd
+# This runs before hostapd starts
+
+# Kill any rogue wpa_supplicant
+pkill -9 wpa_supplicant 2>/dev/null || true
+
+# Ensure wlan0 is down before hostapd takes over
+ip link set wlan0 down 2>/dev/null || true
+sleep 1
+
+# Unblock WiFi
+rfkill unblock wifi 2>/dev/null || true
+
+echo "PiCycle AP pre-start complete"
+PRESTARTEOF
+        chmod +x /usr/bin/picycle_ap_prestart.sh
+
+        # Create systemd override for hostapd to run pre-start script
+        mkdir -p /etc/systemd/system/hostapd.service.d
+        cat > /etc/systemd/system/hostapd.service.d/picycle.conf << 'OVERRIDEEOF'
+[Service]
+ExecStartPre=/usr/bin/picycle_ap_prestart.sh
+OVERRIDEEOF
+        systemctl daemon-reload
+        log_success "hostapd pre-start script installed"
 
         # Verify hostapd is enabled
         if systemctl is-enabled hostapd 2>/dev/null | grep -q enabled; then
-            echo "SUCCESS: hostapd enabled" >> "$ap_log"
+            log_success "hostapd service ENABLED"
             echo -e "${GREEN}✓ hostapd enabled${NC}"
         else
-            echo "WARNING: hostapd may not be enabled" >> "$ap_log"
+            log_error "hostapd may not be enabled"
             echo -e "${RED}Warning: hostapd may not be enabled${NC}"
         fi
 
-        # Final status
+        # Final status summary
+        log_step "=== WIFI AP CONFIGURATION FINAL STATUS ==="
+        log_step "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1 || echo 'masked/disabled')"
+        log_step "hostapd service: $(systemctl is-enabled hostapd 2>&1)"
+        log_step "wpa_supplicant running: $(pgrep -x wpa_supplicant > /dev/null && echo 'YES - PROBLEM!' || echo 'NO - Good')"
+
+        # Copy final log status to AP log file
         echo "" >> "$ap_log"
         echo "=== Final Status ===" >> "$ap_log"
-        echo "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1)" >> "$ap_log"
+        echo "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1 || echo 'masked/disabled')" >> "$ap_log"
         echo "hostapd service: $(systemctl is-enabled hostapd 2>&1)" >> "$ap_log"
         echo "Completed: $(date)" >> "$ap_log"
 
+        log_success "=== WIFI AP CONFIGURATION COMPLETE ==="
         echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
-        echo -e "${CYAN}Log saved to: $ap_log${NC}"
+        echo -e "${CYAN}Logs saved to:${NC}"
+        echo -e "  ${YELLOW}• $INSTALL_LOG${NC} (complete install log)"
+        echo -e "  ${YELLOW}• $ap_log${NC} (AP setup summary)"
         echo -e "${YELLOW}Rebooting now...${NC}"
         sleep 2
         reboot
