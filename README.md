@@ -1,29 +1,83 @@
-# PiCycle 
+<!--
+PiCycle README
+Style notes:
+- Keep relative paths so GitHub renders assets correctly.
+- Avoid overly long lines where practical.
+-->
 
-Currently a work in progress and not fully functional.
+<p align="center">
+  <img src="assets/images/picycle.png" alt="PiCycle" width="360">
+</p>
 
-<center><img style="width: 25%; height: 25%;" alt="PiCycle" src="https://raw.githubusercontent.com/GlowingBones/PiCycle/refs/heads/main/assets/images/picycle.png"></center>
+<h1 align="center">PiCycle</h1>
 
-PiCycle (Raspberry Pi Zero 2W as a HID keyboard, Mass storage device, and Network emulator all at the same time) is not only a nifty little tool, but is is also a proff of concept that even a horrible coder such as myself can leveage AI with plain language articulated dirrections and a bit of swearing to acomplish useful application code.
+<p align="center">
+  Raspberry Pi Zero 2 W USB gadget: HID keyboard, mass storage, and a USB network interface at the same time.
+</p>
 
-<B>To build this project you will need:</B> <BR>
-  ⦁	Pi Zero 2 WH-Pi Zero 2 W (https://a.co/d/dgyNJGX)<BR>
-  ⦁	USB Dongle Expansion Board with Case (https://a.co/d/4QbcUZW)<BR>
-  ⦁	TF Card 64GB with Adapter, High Speed Memory Card, UHS-I C10 A1 (https://a.co/d/89mxLgg)<BR>
+<p align="center">
+  <strong>Status:</strong> work in progress. Expect breaking changes.
+</p>
 
-<B>Step by Step installation:</B><BR>
-⦁	  install Raspberry Pi OS Lite (64-bit) on TF card<BR>
-⦁	  from your ~ directory do the following<BR>
-⦁	  sudo raspi-config nonint do_expand_rootfs<BR>
-⦁	  sudo apt-get install git -y<BR>
-⦁	  sudo apt-get update && sudo apt-get upgrade -y<BR>
-⦁	  git clone --recursive https://github.com/GlowingBones/PiCycle.git<BR>
-⦁	  cd PiCycle<BR>
-⦁	  sudo bash ./install.sh<BR>
-⦁	  When asked enter and confirm wifi AP password.<BR>
-⦁	  Click yes when asked to reboot.<BR>
+## What it does
 
+PiCycle configures a Raspberry Pi Zero 2 W to present multiple USB functions concurrently:
 
-After the Pi has rebooted open your browser to http://10.55.0.1/ via the emulated USB network or connect to SSID PiCycle and open your browser to http://192.168.4.1
-  
+- HID keyboard (for scripted keystrokes)
+- Mass storage (exposed over USB)
+- USB Ethernet (network emulator) with a local web interface
 
+## Hardware
+
+- Raspberry Pi Zero 2 W: https://a.co/d/dgyNJGX
+- USB Dongle Expansion Board with Case: https://a.co/d/4QbcUZW
+- microSD (TF) card, 64 GB recommended: https://a.co/d/89mxLgg
+
+## Software
+
+- Raspberry Pi OS Lite (64-bit)
+
+## Install
+
+1. Flash Raspberry Pi OS Lite (64-bit) to the microSD (TF) card.
+2. Boot the Pi and log in.
+3. From your home directory, run:
+
+```bash
+sudo raspi-config nonint do_expand_rootfs
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y git
+git clone --recursive https://github.com/GlowingBones/PiCycle.git
+cd PiCycle
+sudo bash ./install.sh
+```
+
+4. When prompted, enter and confirm the PiCycle WiFi access point password.
+5. When prompted to reboot, select **Yes**.
+
+## Connect
+
+PiCycle provides two ways to reach the web interface:
+
+### Option A: USB network (recommended)
+
+Using the USB dongle expansion board, plug the PiCycle device directly into your computer's USB port.
+
+Open:
+
+- http://10.55.0.1/
+
+### Option B: WiFi access point
+
+Connect to SSID `PiCycle`, then open:
+
+- http://192.168.4.1
+
+## Safety and legal
+
+PiCycle can generate HID keystrokes. Use only on systems you own or have explicit permission to test. Review and validate any automation before running it.
+
+## License
+
+See the repository for licensing information.
