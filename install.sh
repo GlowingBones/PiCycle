@@ -86,7 +86,7 @@ configure_wifi() {
     # The switch to AP mode will happen on reboot
     systemctl stop hostapd 2>/dev/null || true
 
-    # Configure hostapd for hidden AP
+    # Configure hostapd for AP (broadcasting)
     mkdir -p /etc/hostapd
     cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
 interface=wlan0
@@ -97,7 +97,7 @@ channel=7
 wmm_enabled=0
 macaddr_acl=0
 auth_algs=1
-ignore_broadcast_ssid=1
+ignore_broadcast_ssid=0
 wpa=2
 wpa_passphrase=$wifi_pass
 wpa_key_mgmt=WPA-PSK
@@ -142,7 +142,7 @@ DNSMASQWLANEOF
     systemctl enable hostapd 2>/dev/null || true
 
     echo -e "${GREEN}✓ WiFi Access Point configured${NC}"
-    echo -e "  ${CYAN}SSID:${NC} PiCycle (hidden)"
+    echo -e "  ${CYAN}SSID:${NC} PiCycle"
     echo -e "  ${CYAN}IP:${NC} 192.168.4.1"
     echo -e "  ${CYAN}DHCP Range:${NC} 192.168.4.10 - 192.168.4.100"
 }
@@ -207,15 +207,11 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} Storage size: 8 GB"
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
 
-    # Check for existing corrupted storage image and remove it
+    # Always remove existing storage image to ensure fresh start
     if [ -f /piusb.img ]; then
-        if /sbin/fsck.vfat -n /piusb.img >/dev/null 2>&1; then
-            echo -e "  ${GREEN}✓${NC} Existing storage image is valid"
-        else
-            echo -e "  ${YELLOW}⚠${NC} Existing storage image corrupted, removing..."
-            rm -f /piusb.img
-            echo -e "  ${GREEN}✓${NC} Corrupted image removed (will be recreated on boot)"
-        fi
+        echo -e "  ${YELLOW}⚠${NC} Removing existing storage image..."
+        rm -f /piusb.img
+        echo -e "  ${GREEN}✓${NC} Old image removed (fresh 8GB image will be created on boot)"
     fi
 
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
