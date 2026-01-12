@@ -11,7 +11,7 @@ PiCycle (Raspberry Pi Zero 2W as a HID keyboard, Mass storage device, and Networ
   ⦁	USB Dongle Expansion Board with Case (https://a.co/d/4QbcUZW)<BR>
   ⦁	TF Card 64GB with Adapter, High Speed Memory Card, UHS-I C10 A1 (https://a.co/d/89mxLgg)<BR>
 
-<B>Step by Step installation:</B>
+<B>Step by Step installation:</B><BR>
 ⦁	  install Raspberry Pi OS Lite (64-bit) on TF card<BR>
 ⦁	  from your ~ directory do the following<BR>
 ⦁	  sudo raspi-config nonint do_expand_rootfs<BR>
