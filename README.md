@@ -6,12 +6,10 @@ Currently a work in progress and not fully functional.
 
 PiCycle (Raspberry Pi Zero 2W as a HID keyboard, Mass storage device, and Network emulator all at the same time) is not only a nifty little tool, but is is also a proff of concept that even a horrible coder such as myself can leveage AI with plain language articulated dirrections and a bit of swearing to acomplish useful application code.
 
-To build this project you will need:
-  ⦁	Pi Zero 2 WH-Pi Zero 2 W (https://a.co/d/dgyNJGX)
-  
-  ⦁	USB Dongle Expansion Board with Case (https://a.co/d/4QbcUZW)
-  
-  ⦁	TF Card 64GB with Adapter, High Speed Memory Card, UHS-I C10 A1 (https://a.co/d/89mxLgg)
+To build this project you will need: <BR>
+  ⦁	Pi Zero 2 WH-Pi Zero 2 W (https://a.co/d/dgyNJGX)<BR>
+  ⦁	USB Dongle Expansion Board with Case (https://a.co/d/4QbcUZW)<BR>
+  ⦁	TF Card 64GB with Adapter, High Speed Memory Card, UHS-I C10 A1 (https://a.co/d/89mxLgg)<BR>
 
 Step by Step installation:
 
