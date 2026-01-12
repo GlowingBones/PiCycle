@@ -13,26 +13,17 @@ To build this project you will need: <BR>
 
 Step by Step installation:
 
-  install Pi OS on TF card
+  install Pi OS on TF card<BR>
+  from your ~ directory do the following<BR>
+  sudo raspi-config nonint do_expand_rootfs<BR>
+  sudo apt-get install git -y<BR>
+  sudo apt-get update && sudo apt-get upgrade -y<BR>
+  git clone --recursive https://github.com/GlowingBones/PiCycle.git<BR>
+  cd PiCycle<BR>
+  sudo bash ./install.sh<BR>
+  When asked enter and confirm wifi AP password.<BR>
+  Click yes when asked to reboot.<BR>
 
-  from your ~ directory do the following
-
-  sudo raspi-config nonint do_expand_rootfs
-
-  sudo apt-get install git -y
-
-  sudo apt-get update && sudo apt-get upgrade -y
-
-  git clone --recursive https://github.com/GlowingBones/PiCycle.git
-
-  cd PiCycle
-
-  sudo bash ./install.sh
-
-  When asked enter and confirm wifi AP password.
-
-  Click yes when asked to reboot.
-
-After the Pi has rebooted open your browser to http://10.55.0.1/ via the emulated USB network or connect to SSID PiCycle and open your browser to http://192.168.?.?
+After the Pi has rebooted open your browser to http://10.55.0.1/ via the emulated USB network or connect to SSID PiCycle and open your browser to http://192.168.4.1
   
 
