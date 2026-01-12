@@ -138,10 +138,10 @@ EOF
     read -p "Press Enter to continue..."
 }
 
-# Configure WiFi Access Point (broadcasting SSID: PiCycle)
+# Configure WiFi Access Point
 configure_wifi() {
     echo -e "\n${CYAN}${BOLD}WiFi Access Point Configuration${NC}"
-    echo -e "${YELLOW}Setting up WiFi Access Point (SSID: PiCycle)${NC}\n"
+    echo -e "${YELLOW}Setting up WiFi AP (SSID: PiCycle)${NC}\n"
 
     # Get password from user
     local wifi_pass=""
@@ -161,14 +161,12 @@ configure_wifi() {
         break
     done
 
-    # Install hostapd for AP mode
+    # Install hostapd
     echo -e "${YELLOW}Installing hostapd...${NC}"
     apt install -y hostapd >/dev/null 2>&1 || true
-
-    # Stop hostapd during configuration (don't stop wpa_supplicant - user is connected!)
     systemctl stop hostapd 2>/dev/null || true
 
-    # Create hostapd directory and config
+    # Create hostapd config
     mkdir -p /etc/hostapd
     cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
 interface=wlan0
@@ -188,43 +186,37 @@ rsn_pairwise=CCMP
 HOSTAPDEOF
     chmod 600 /etc/hostapd/hostapd.conf
 
-    # Point hostapd to config file
+    # Point hostapd to config
     if [ -f /etc/default/hostapd ]; then
         sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
     fi
 
-    # Create dnsmasq config for wlan0 (separate from usb0)
+    # Create dnsmasq config for wlan0
     mkdir -p /etc/dnsmasq.d
-    cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANDHCPEOF'
-# PiCycle WiFi AP DHCP - DO NOT EDIT
+    cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
 interface=wlan0
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
-WLANDHCPEOF
+WLANEOF
 
-    # Add wlan0 static IP to dhcpcd.conf (will be used after reboot)
-    # First remove any existing wlan0 AP config
-    sed -i '/^# PiCycle-AP wlan0/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
-
-    # Append wlan0 AP config at the end
+    # Add wlan0 static IP to dhcpcd.conf
+    sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
     cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
 
-# PiCycle-AP wlan0
+# PiCycle-AP
 interface wlan0
 static ip_address=192.168.4.1/24
 nohook wpa_supplicant
 
 WLANAPEOF
 
-    # Unmask and enable hostapd (will start on reboot)
+    # Enable hostapd
     systemctl unmask hostapd 2>/dev/null || true
     systemctl enable hostapd 2>/dev/null || true
 
-    echo -e "${GREEN}✓ WiFi Access Point configured (activates after reboot)${NC}"
-    echo -e "  ${CYAN}SSID:${NC} PiCycle"
-    echo -e "  ${CYAN}IP:${NC} 192.168.4.1"
+    echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
 }
 
 # Install PiCycle
@@ -282,11 +274,10 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
     # Configure storage size (always 8GB)
-    echo -e "\n${YELLOW}[6/10] Configuring USB mass storage size...${NC}"
+    echo -e "\n${YELLOW}[6/10] Creating USB mass storage (8GB)...${NC}"
     local storage_mb=8192
-    echo -e "  ${GREEN}✓${NC} Storage size: 8 GB"
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
-    
+
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
     if [ "$available_mb" -lt "$storage_mb" ]; then
         echo -e "  ${YELLOW}⚠${NC} Warning: Only ${available_mb}MB available"
@@ -294,6 +285,19 @@ install_picycle() {
         echo
         [[ ! $REPLY =~ ^[Yy]$ ]] && return
     fi
+
+    # Create and format storage image NOW during install
+    if [ -f /piusb.img ]; then
+        echo -e "  ${YELLOW}Removing old storage image...${NC}"
+        rm -f /piusb.img
+    fi
+    echo -e "  ${CYAN}Creating ${storage_mb}MB storage image (this takes several minutes)...${NC}"
+    dd if=/dev/zero of=/piusb.img bs=1M count="$storage_mb" status=progress
+    sync
+    echo -e "  ${CYAN}Formatting as FAT32...${NC}"
+    /sbin/mkfs.vfat -F 32 -n "PICYCLE" /piusb.img
+    sync
+    echo -e "  ${GREEN}✓${NC} Storage image created and formatted"
     
     # Create gadget script
     echo -e "\n${YELLOW}[7/10] Creating USB gadget script...${NC}"
@@ -614,7 +618,6 @@ SERVICEEOF
     
     # Configure network
     echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
-    # Remove ONLY USB network config (not WiFi AP config)
     sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
 
