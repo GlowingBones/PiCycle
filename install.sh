@@ -138,47 +138,85 @@ EOF
     read -p "Press Enter to continue..."
 }
 
-# Configure WiFi
+# Configure WiFi Access Point
 configure_wifi() {
-    echo -e "\n${CYAN}${BOLD}WiFi Configuration${NC}"
-    echo -e "${YELLOW}Do you want to configure WiFi for remote access?${NC}"
-    echo -e "  ${GREEN}[1]${NC} Yes - Configure WiFi now"
-    echo -e "  ${GREEN}[2]${NC} No - Skip WiFi configuration"
-    echo ""
-    
-    read -p "Selection [1-2]: " wifi_choice
-    
-    if [[ "$wifi_choice" == "1" ]]; then
-        read -p "Enter WiFi SSID: " wifi_ssid
-        read -sp "Enter WiFi Password: " wifi_pass
-        echo ""
-        
-        # Configure wpa_supplicant
-        cat >> /etc/wpa_supplicant/wpa_supplicant.conf << WIFIEOF
+    echo -e "\n${CYAN}${BOLD}WiFi Access Point Configuration${NC}"
+    echo -e "${YELLOW}Setting up WiFi AP (SSID: PiCycle)${NC}\n"
 
-network={
-	ssid="$wifi_ssid"
-	psk="$wifi_pass"
-	key_mgmt=WPA-PSK
-}
-WIFIEOF
-        
-        # Restart networking
-        wpa_cli -i wlan0 reconfigure 2>/dev/null || true
-        
-        echo -e "${GREEN}✓ WiFi configured for: $wifi_ssid${NC}"
-        echo -e "${YELLOW}Testing connection...${NC}"
-        sleep 5
-        
-        if iwgetid -r &>/dev/null; then
-            local ip=$(hostname -I | awk '{print $1}')
-            echo -e "${GREEN}✓ Connected! IP: $ip${NC}"
-        else
-            echo -e "${YELLOW}⚠ Not connected yet. May connect after reboot.${NC}"
+    # Get password from user
+    local wifi_pass=""
+    while true; do
+        read -sp "Enter WiFi AP password (8-63 characters): " wifi_pass
+        echo ""
+        if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
+            echo -e "${RED}Password must be 8-63 characters${NC}"
+            continue
         fi
-    else
-        echo -e "${CYAN}Skipped WiFi configuration${NC}"
+        read -sp "Confirm password: " wifi_pass_confirm
+        echo ""
+        if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
+            echo -e "${RED}Passwords do not match${NC}"
+            continue
+        fi
+        break
+    done
+
+    # Install hostapd
+    echo -e "${YELLOW}Installing hostapd...${NC}"
+    apt install -y hostapd >/dev/null 2>&1 || true
+    systemctl stop hostapd 2>/dev/null || true
+
+    # Create hostapd config
+    mkdir -p /etc/hostapd
+    cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
+interface=wlan0
+driver=nl80211
+ssid=PiCycle
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=$wifi_pass
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+HOSTAPDEOF
+    chmod 600 /etc/hostapd/hostapd.conf
+
+    # Point hostapd to config
+    if [ -f /etc/default/hostapd ]; then
+        sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
     fi
+
+    # Create dnsmasq config for wlan0
+    mkdir -p /etc/dnsmasq.d
+    cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
+interface=wlan0
+bind-interfaces
+dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+WLANEOF
+
+    # Add wlan0 static IP to dhcpcd.conf
+    sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
+    cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
+
+# PiCycle-AP
+interface wlan0
+static ip_address=192.168.4.1/24
+nohook wpa_supplicant
+
+WLANAPEOF
+
+    # Enable hostapd
+    systemctl unmask hostapd 2>/dev/null || true
+    systemctl enable hostapd 2>/dev/null || true
+
+    echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
 }
 
 # Install PiCycle
@@ -236,11 +274,10 @@ install_picycle() {
     echo -e "  ${GREEN}✓${NC} Packages installed"
     
     # Configure storage size (always 8GB)
-    echo -e "\n${YELLOW}[6/10] Configuring USB mass storage size...${NC}"
+    echo -e "\n${YELLOW}[6/10] Creating USB mass storage (8GB)...${NC}"
     local storage_mb=8192
-    echo -e "  ${GREEN}✓${NC} Storage size: 8 GB"
     echo "$storage_mb" > "$CONFIG_DIR/storage_size"
-    
+
     local available_mb=$(df / | awk 'NR==2 {print int($4/1024)}')
     if [ "$available_mb" -lt "$storage_mb" ]; then
         echo -e "  ${YELLOW}⚠${NC} Warning: Only ${available_mb}MB available"
@@ -248,6 +285,19 @@ install_picycle() {
         echo
         [[ ! $REPLY =~ ^[Yy]$ ]] && return
     fi
+
+    # Create and format storage image NOW during install
+    if [ -f /piusb.img ]; then
+        echo -e "  ${YELLOW}Removing old storage image...${NC}"
+        rm -f /piusb.img
+    fi
+    echo -e "  ${CYAN}Creating ${storage_mb}MB storage image (this takes several minutes)...${NC}"
+    dd if=/dev/zero of=/piusb.img bs=1M count="$storage_mb" status=progress
+    sync
+    echo -e "  ${CYAN}Formatting as FAT32...${NC}"
+    /sbin/mkfs.vfat -F 32 -n "PICYCLE" /piusb.img
+    sync
+    echo -e "  ${GREEN}✓${NC} Storage image created and formatted"
     
     # Create gadget script
     echo -e "\n${YELLOW}[7/10] Creating USB gadget script...${NC}"
@@ -568,7 +618,7 @@ SERVICEEOF
     
     # Configure network
     echo -e "\n${YELLOW}[9/10] Configuring USB network and DHCP...${NC}"
-    sed -i '/^# PiCycle/,/^$/d' /etc/dhcpcd.conf
+    sed -i '/^# PiCycle USB Network/,/^$/d' /etc/dhcpcd.conf
     sed -i '/^interface usb0/,/^$/d' /etc/dhcpcd.conf
 
     cat >> /etc/dhcpcd.conf << 'NETEOF'
@@ -577,6 +627,7 @@ SERVICEEOF
 interface usb0
 static ip_address=10.55.0.1/24
 nohook wpa_supplicant
+
 NETEOF
 
     # Create dnsmasq config directory
@@ -842,11 +893,13 @@ EOF
     echo -e ""
     echo -e "${CYAN}SSH Access:${NC}"
     echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
-    echo -e "  • Via WiFi: ${YELLOW}ssh pi@<wifi-ip>${NC}"
+    echo -e "  • Via WiFi AP: ${YELLOW}ssh pi@192.168.4.1${NC}"
     echo -e ""
-    echo -e "${CYAN}Test HID keyboard:${NC}"
-    echo -e "  ${YELLOW}sudo python3 picycle.py${NC}\n"
-    
+    echo -e "${CYAN}WiFi Access Point:${NC}"
+    echo -e "  • SSID: ${YELLOW}PiCycle${NC}"
+    echo -e "  • IP: ${YELLOW}192.168.4.1${NC}"
+    echo -e ""
+
     read -p "Reboot now? (y/n): " -n 1 -r
     echo
     [[ $REPLY =~ ^[Yy]$ ]] && reboot
@@ -984,21 +1037,8 @@ restore_defaults() {
 # Main program
 main() {
     check_root
-
-    while true; do
-        show_banner
-        show_menu
-
-        read -p "$(echo -e "${WHITE}Enter selection [1-4]: ${NC}")" choice
-
-        case $choice in
-            1) install_picycle ;;
-            2) diagnostic_report ;;
-            3) restore_defaults ;;
-            4) echo -e "\n${CYAN}Goodbye!${NC}\n"; exit 0 ;;
-            *) echo -e "\n${RED}Invalid selection${NC}\n"; sleep 2 ;;
-        esac
-    done
+    show_banner
+    install_picycle
 }
 
 main "$@"
