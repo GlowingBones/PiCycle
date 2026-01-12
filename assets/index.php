@@ -2,218 +2,1352 @@
 declare(strict_types=1);
 
 /*
-  PiCycle index.php
-  Purpose: confirm PHP is executing, show basic device and asset status, and serve local assets.
+  PiCycle Control Panel
+  Features:
+  1. File upload to USB mass storage
+  2. Network information display (USB and real interfaces)
+  3. Virtual HID keyboard
+  4. DuckyScript execution from Scripts directory
+  5. Built-in script text editor
 */
 
-function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
+// Configuration
+define('HID_DEVICE', '/dev/hidg0');
+define('USB_IMAGE', '/piusb.img');
+define('USB_MOUNT', '/mnt/piusb');
+define('SCRIPTS_DIR', __DIR__ . '/Scripts');
 
-$docroot = $_SERVER['DOCUMENT_ROOT'] ?? __DIR__;
-$docroot = rtrim($docroot, '/');
+// Security helper
+function h(string $s): string {
+    return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
 
-$clientIp = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-$serverIp = $_SERVER['SERVER_ADDR'] ?? ($_SERVER['SERVER_NAME'] ?? 'unknown');
-$nowUtc   = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c');
-
-$assetCandidates = [
-  $docroot . '/assets',
-  $docroot,
+// HID Keycodes
+$KEYCODES = [
+    'a' => 0x04, 'b' => 0x05, 'c' => 0x06, 'd' => 0x07, 'e' => 0x08, 'f' => 0x09,
+    'g' => 0x0a, 'h' => 0x0b, 'i' => 0x0c, 'j' => 0x0d, 'k' => 0x0e, 'l' => 0x0f,
+    'm' => 0x10, 'n' => 0x11, 'o' => 0x12, 'p' => 0x13, 'q' => 0x14, 'r' => 0x15,
+    's' => 0x16, 't' => 0x17, 'u' => 0x18, 'v' => 0x19, 'w' => 0x1a, 'x' => 0x1b,
+    'y' => 0x1c, 'z' => 0x1d,
+    '1' => 0x1e, '2' => 0x1f, '3' => 0x20, '4' => 0x21, '5' => 0x22,
+    '6' => 0x23, '7' => 0x24, '8' => 0x25, '9' => 0x26, '0' => 0x27,
+    'enter' => 0x28, 'esc' => 0x29, 'backspace' => 0x2a, 'tab' => 0x2b,
+    'space' => 0x2c, '-' => 0x2d, '=' => 0x2e, '[' => 0x2f, ']' => 0x30,
+    '\\' => 0x31, ';' => 0x33, "'" => 0x34, '`' => 0x35, ',' => 0x36,
+    '.' => 0x37, '/' => 0x38, 'caps' => 0x39,
+    'f1' => 0x3a, 'f2' => 0x3b, 'f3' => 0x3c, 'f4' => 0x3d, 'f5' => 0x3e,
+    'f6' => 0x3f, 'f7' => 0x40, 'f8' => 0x41, 'f9' => 0x42, 'f10' => 0x43,
+    'f11' => 0x44, 'f12' => 0x45, 'print' => 0x46, 'scroll' => 0x47,
+    'pause' => 0x48, 'insert' => 0x49, 'home' => 0x4a, 'pageup' => 0x4b,
+    'delete' => 0x4c, 'end' => 0x4d, 'pagedown' => 0x4e,
+    'right' => 0x4f, 'left' => 0x50, 'down' => 0x51, 'up' => 0x52
 ];
 
-function firstExistingFile(array $candidates, array $relativeNames): ?string {
-  foreach ($candidates as $base) {
-    foreach ($relativeNames as $rel) {
-      $p = rtrim($base, '/') . '/' . ltrim($rel, '/');
-      if (is_file($p)) return $p;
+// Characters needing shift
+$SHIFT_MAP = [
+    '!' => '1', '@' => '2', '#' => '3', '$' => '4', '%' => '5', '^' => '6',
+    '&' => '7', '*' => '8', '(' => '9', ')' => '0', '_' => '-', '+' => '=',
+    '{' => '[', '}' => ']', '|' => '\\', ':' => ';', '"' => "'",
+    '<' => ',', '>' => '.', '?' => '/', '~' => '`',
+    'A' => 'a', 'B' => 'b', 'C' => 'c', 'D' => 'd', 'E' => 'e', 'F' => 'f',
+    'G' => 'g', 'H' => 'h', 'I' => 'i', 'J' => 'j', 'K' => 'k', 'L' => 'l',
+    'M' => 'm', 'N' => 'n', 'O' => 'o', 'P' => 'p', 'Q' => 'q', 'R' => 'r',
+    'S' => 's', 'T' => 't', 'U' => 'u', 'V' => 'v', 'W' => 'w', 'X' => 'x',
+    'Y' => 'y', 'Z' => 'z'
+];
+
+// Modifier keys
+$MODIFIERS = [
+    'ctrl' => 0x01, 'shift' => 0x02, 'alt' => 0x04, 'gui' => 0x08,
+    'right_ctrl' => 0x10, 'right_shift' => 0x20, 'right_alt' => 0x40, 'right_gui' => 0x80
+];
+
+// DuckyScript key mapping
+$DUCKY_MAP = [
+    'GUI' => 'gui', 'WINDOWS' => 'gui', 'CTRL' => 'ctrl', 'CONTROL' => 'ctrl',
+    'SHIFT' => 'shift', 'ALT' => 'alt', 'ENTER' => 'enter', 'ESCAPE' => 'esc',
+    'ESC' => 'esc', 'TAB' => 'tab', 'SPACE' => 'space', 'BACKSPACE' => 'backspace',
+    'DELETE' => 'delete', 'HOME' => 'home', 'END' => 'end', 'PAGEUP' => 'pageup',
+    'PAGEDOWN' => 'pagedown', 'UP' => 'up', 'DOWN' => 'down', 'LEFT' => 'left',
+    'RIGHT' => 'right', 'UPARROW' => 'up', 'DOWNARROW' => 'down',
+    'LEFTARROW' => 'left', 'RIGHTARROW' => 'right',
+    'F1' => 'f1', 'F2' => 'f2', 'F3' => 'f3', 'F4' => 'f4', 'F5' => 'f5',
+    'F6' => 'f6', 'F7' => 'f7', 'F8' => 'f8', 'F9' => 'f9', 'F10' => 'f10',
+    'F11' => 'f11', 'F12' => 'f12', 'CAPSLOCK' => 'caps', 'PRINTSCREEN' => 'print',
+    'SCROLLLOCK' => 'scroll', 'PAUSE' => 'pause', 'INSERT' => 'insert',
+    'BREAK' => 'pause', 'MENU' => 'app'
+];
+
+// Send HID report
+function sendHIDReport(int $modifier, int $keycode): bool {
+    if (!file_exists(HID_DEVICE)) {
+        return false;
     }
-  }
-  return null;
+    $report = pack('C8', $modifier, 0, $keycode, 0, 0, 0, 0, 0);
+    $fp = @fopen(HID_DEVICE, 'rb+');
+    if ($fp === false) {
+        return false;
+    }
+    $result = fwrite($fp, $report);
+    fclose($fp);
+    return $result !== false;
 }
 
-$logoPath = firstExistingFile(
-  $assetCandidates,
-  ['picycle.png', 'assets/picycle.png', 'img/picycle.png', 'images/picycle.png']
-);
-
-function webPathFromDocroot(string $docroot, string $absPath): string {
-  $docroot = rtrim($docroot, '/');
-  if (str_starts_with($absPath, $docroot . '/')) {
-    return '/' . ltrim(substr($absPath, strlen($docroot)), '/');
-  }
-  return '';
+// Release all keys
+function releaseAllKeys(): bool {
+    return sendHIDReport(0, 0);
 }
 
-$logoWeb = $logoPath ? webPathFromDocroot($docroot, $logoPath) : '';
+// Press a single key
+function pressKey(string $key, int $modifier = 0, int $durationMs = 50): bool {
+    global $KEYCODES, $SHIFT_MAP;
 
-$checks = [
-  'PHP executing' => true,
-  'Document root exists' => is_dir($docroot),
-  'index.php readable' => is_readable(__FILE__),
-  '/var/www/html exists' => is_dir('/var/www/html'),
-  '/dev/hidg0 present' => file_exists('/dev/hidg0'),
-  '/dev/hidg1 present' => file_exists('/dev/hidg1'),
-  '/dev/hidg2 present' => file_exists('/dev/hidg2'),
-];
+    $keyLower = strtolower($key);
 
-function listFiles(string $dir, int $limit = 200): array {
-  if (!is_dir($dir) || !is_readable($dir)) return [];
-  $out = [];
-  $it = @scandir($dir);
-  if ($it === false) return [];
-  foreach ($it as $name) {
-    if ($name === '.' || $name === '..') continue;
-    if ($name[0] === '.') continue;
-    $path = rtrim($dir, '/') . '/' . $name;
-    $out[] = [
-      'name' => $name,
-      'is_dir' => is_dir($path),
-      'size' => is_file($path) ? filesize($path) : null,
-      'mtime' => @filemtime($path) ?: null,
+    // Handle shifted characters
+    if (isset($SHIFT_MAP[$key])) {
+        $modifier |= 0x02; // Add shift
+        $keyLower = strtolower($SHIFT_MAP[$key]);
+    }
+
+    if (!isset($KEYCODES[$keyLower])) {
+        return false;
+    }
+
+    $keycode = $KEYCODES[$keyLower];
+
+    // Press
+    if (!sendHIDReport($modifier, $keycode)) {
+        return false;
+    }
+    usleep($durationMs * 1000);
+
+    // Release
+    releaseAllKeys();
+    usleep(10000); // 10ms between keys
+
+    return true;
+}
+
+// Type a string
+function typeString(string $text, int $delayMs = 50): bool {
+    for ($i = 0; $i < strlen($text); $i++) {
+        $char = $text[$i];
+        if ($char === "\n") {
+            pressKey('enter', 0, $delayMs);
+        } else {
+            pressKey($char, 0, $delayMs);
+        }
+    }
+    return true;
+}
+
+// Press key combination
+function pressCombo(array $keys): bool {
+    global $KEYCODES, $MODIFIERS;
+
+    $modifier = 0;
+    $keycode = 0;
+
+    foreach ($keys as $key) {
+        $keyLower = strtolower(trim($key));
+        if (isset($MODIFIERS[$keyLower])) {
+            $modifier |= $MODIFIERS[$keyLower];
+        } elseif (isset($KEYCODES[$keyLower])) {
+            $keycode = $KEYCODES[$keyLower];
+        }
+    }
+
+    // Press combo
+    if (!sendHIDReport($modifier, $keycode)) {
+        return false;
+    }
+    usleep(100000); // 100ms hold
+
+    // Release
+    releaseAllKeys();
+    return true;
+}
+
+// Execute DuckyScript
+function executeDuckyScript(string $script): array {
+    global $DUCKY_MAP;
+
+    $results = [];
+    $lines = explode("\n", str_replace("\r\n", "\n", $script));
+    $defaultDelay = 0;
+
+    foreach ($lines as $lineNum => $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0 || strpos($line, 'REM') === 0) {
+            continue;
+        }
+
+        $parts = preg_split('/\s+/', $line, 2);
+        $command = strtoupper($parts[0]);
+        $args = isset($parts[1]) ? $parts[1] : '';
+
+        if ($command === 'STRING') {
+            typeString($args);
+            $results[] = "Typed: " . substr($args, 0, 50) . (strlen($args) > 50 ? '...' : '');
+        } elseif ($command === 'DELAY') {
+            $delayMs = intval($args);
+            usleep($delayMs * 1000);
+            $results[] = "Delayed: {$delayMs}ms";
+        } elseif ($command === 'DEFAULT_DELAY' || $command === 'DEFAULTDELAY') {
+            $defaultDelay = intval($args);
+            $results[] = "Default delay set: {$defaultDelay}ms";
+        } elseif ($command === 'REPEAT') {
+            // Not implemented
+            $results[] = "REPEAT not supported";
+        } else {
+            // Key press or combo
+            $keyNames = preg_split('/\s+/', $line);
+            $mappedKeys = [];
+            foreach ($keyNames as $keyName) {
+                $upper = strtoupper($keyName);
+                if (isset($DUCKY_MAP[$upper])) {
+                    $mappedKeys[] = $DUCKY_MAP[$upper];
+                } else {
+                    $mappedKeys[] = strtolower($keyName);
+                }
+            }
+
+            if (count($mappedKeys) === 1) {
+                pressKey($mappedKeys[0]);
+            } else {
+                pressCombo($mappedKeys);
+            }
+            $results[] = "Key(s): " . implode(' + ', $mappedKeys);
+        }
+
+        if ($defaultDelay > 0) {
+            usleep($defaultDelay * 1000);
+        }
+    }
+
+    return $results;
+}
+
+// Get network interface info
+function getNetworkInfo(string $interface): array {
+    $info = [
+        'interface' => $interface,
+        'exists' => false,
+        'ip' => null,
+        'netmask' => null,
+        'broadcast' => null,
+        'mac' => null,
+        'gateway' => null,
+        'dns' => [],
+        'state' => 'down'
     ];
-    if (count($out) >= $limit) break;
-  }
-  usort($out, function($a, $b) {
-    if ($a['is_dir'] !== $b['is_dir']) return $a['is_dir'] ? -1 : 1;
-    return strcmp($a['name'], $b['name']);
-  });
-  return $out;
+
+    // Check if interface exists
+    if (!file_exists("/sys/class/net/{$interface}")) {
+        return $info;
+    }
+    $info['exists'] = true;
+
+    // Get state
+    $state = @file_get_contents("/sys/class/net/{$interface}/operstate");
+    if ($state !== false) {
+        $info['state'] = trim($state);
+    }
+
+    // Get MAC address
+    $mac = @file_get_contents("/sys/class/net/{$interface}/address");
+    if ($mac !== false) {
+        $info['mac'] = trim($mac);
+    }
+
+    // Get IP info using ip command
+    $output = shell_exec("ip addr show {$interface} 2>/dev/null");
+    if ($output) {
+        if (preg_match('/inet (\d+\.\d+\.\d+\.\d+)\/(\d+)/', $output, $matches)) {
+            $info['ip'] = $matches[1];
+            $cidr = intval($matches[2]);
+            $info['netmask'] = long2ip(-1 << (32 - $cidr));
+        }
+        if (preg_match('/brd (\d+\.\d+\.\d+\.\d+)/', $output, $matches)) {
+            $info['broadcast'] = $matches[1];
+        }
+    }
+
+    // Get gateway
+    $routeOutput = shell_exec("ip route show dev {$interface} 2>/dev/null");
+    if ($routeOutput && preg_match('/default via (\d+\.\d+\.\d+\.\d+)/', $routeOutput, $matches)) {
+        $info['gateway'] = $matches[1];
+    }
+
+    // Get DNS from resolv.conf
+    $resolvConf = @file_get_contents('/etc/resolv.conf');
+    if ($resolvConf && preg_match_all('/nameserver\s+(\d+\.\d+\.\d+\.\d+)/', $resolvConf, $matches)) {
+        $info['dns'] = $matches[1];
+    }
+
+    return $info;
 }
 
-$filesRoot = listFiles($docroot);
-$filesAssets = listFiles($docroot . '/assets');
+// Get all network interfaces
+function getAllNetworkInterfaces(): array {
+    $interfaces = [];
+    $dirs = @scandir('/sys/class/net');
+    if ($dirs) {
+        foreach ($dirs as $iface) {
+            if ($iface[0] !== '.' && $iface !== 'lo') {
+                $interfaces[] = $iface;
+            }
+        }
+    }
+    return $interfaces;
+}
+
+// Mount USB storage
+function mountUSBStorage(): array {
+    $result = ['success' => false, 'message' => '', 'mounted' => false];
+
+    if (!file_exists(USB_IMAGE)) {
+        $result['message'] = 'USB image not found: ' . USB_IMAGE;
+        return $result;
+    }
+
+    // Create mount point if needed
+    if (!is_dir(USB_MOUNT)) {
+        if (!@mkdir(USB_MOUNT, 0755, true)) {
+            $result['message'] = 'Cannot create mount point: ' . USB_MOUNT;
+            return $result;
+        }
+    }
+
+    // Check if already mounted
+    $mounts = @file_get_contents('/proc/mounts');
+    if ($mounts && strpos($mounts, USB_MOUNT) !== false) {
+        $result['success'] = true;
+        $result['mounted'] = true;
+        $result['message'] = 'Already mounted';
+        return $result;
+    }
+
+    // Mount the image
+    $cmd = "sudo mount -o loop,rw " . escapeshellarg(USB_IMAGE) . " " . escapeshellarg(USB_MOUNT) . " 2>&1";
+    $output = shell_exec($cmd);
+
+    // Check if mount succeeded
+    $mounts = @file_get_contents('/proc/mounts');
+    if ($mounts && strpos($mounts, USB_MOUNT) !== false) {
+        $result['success'] = true;
+        $result['mounted'] = true;
+        $result['message'] = 'Mounted successfully';
+    } else {
+        $result['message'] = 'Mount failed: ' . ($output ?: 'unknown error');
+    }
+
+    return $result;
+}
+
+// Unmount USB storage
+function unmountUSBStorage(): array {
+    $result = ['success' => false, 'message' => ''];
+
+    $cmd = "sudo umount " . escapeshellarg(USB_MOUNT) . " 2>&1";
+    $output = shell_exec($cmd);
+
+    // Check if unmount succeeded
+    $mounts = @file_get_contents('/proc/mounts');
+    if ($mounts === false || strpos($mounts, USB_MOUNT) === false) {
+        $result['success'] = true;
+        $result['message'] = 'Unmounted successfully';
+    } else {
+        $result['message'] = 'Unmount failed: ' . ($output ?: 'unknown error');
+    }
+
+    return $result;
+}
+
+// Get USB storage files
+function getUSBFiles(): array {
+    $mount = mountUSBStorage();
+    if (!$mount['mounted']) {
+        return ['error' => $mount['message'], 'files' => []];
+    }
+
+    $files = [];
+    $items = @scandir(USB_MOUNT);
+    if ($items) {
+        foreach ($items as $item) {
+            if ($item[0] === '.') continue;
+            $path = USB_MOUNT . '/' . $item;
+            $files[] = [
+                'name' => $item,
+                'is_dir' => is_dir($path),
+                'size' => is_file($path) ? filesize($path) : 0,
+                'mtime' => filemtime($path)
+            ];
+        }
+    }
+
+    usort($files, function($a, $b) {
+        if ($a['is_dir'] !== $b['is_dir']) return $a['is_dir'] ? -1 : 1;
+        return strcasecmp($a['name'], $b['name']);
+    });
+
+    return ['error' => null, 'files' => $files];
+}
+
+// Get script files
+function getScriptFiles(): array {
+    $scripts = [];
+    if (!is_dir(SCRIPTS_DIR)) {
+        @mkdir(SCRIPTS_DIR, 0755, true);
+    }
+    $items = @scandir(SCRIPTS_DIR);
+    if ($items) {
+        foreach ($items as $item) {
+            if ($item[0] === '.') continue;
+            $path = SCRIPTS_DIR . '/' . $item;
+            if (is_file($path) && pathinfo($item, PATHINFO_EXTENSION) === 'txt') {
+                $scripts[] = [
+                    'name' => $item,
+                    'size' => filesize($path),
+                    'mtime' => filemtime($path)
+                ];
+            }
+        }
+    }
+    usort($scripts, function($a, $b) {
+        return strcasecmp($a['name'], $b['name']);
+    });
+    return $scripts;
+}
+
+// Handle AJAX requests
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    header('Content-Type: application/json');
+    $response = ['success' => false, 'message' => ''];
+
+    switch ($_POST['action']) {
+        case 'send_key':
+            $key = $_POST['key'] ?? '';
+            $modifier = intval($_POST['modifier'] ?? 0);
+            if ($key) {
+                $response['success'] = pressKey($key, $modifier);
+                $response['message'] = $response['success'] ? 'Key sent' : 'Failed to send key';
+            }
+            break;
+
+        case 'send_combo':
+            $keys = $_POST['keys'] ?? '';
+            if ($keys) {
+                $keyArray = explode(' ', $keys);
+                $response['success'] = pressCombo($keyArray);
+                $response['message'] = $response['success'] ? 'Combo sent' : 'Failed to send combo';
+            }
+            break;
+
+        case 'type_string':
+            $text = $_POST['text'] ?? '';
+            if ($text) {
+                $response['success'] = typeString($text);
+                $response['message'] = $response['success'] ? 'Text typed' : 'Failed to type text';
+            }
+            break;
+
+        case 'run_script':
+            $scriptName = $_POST['script'] ?? '';
+            $scriptPath = SCRIPTS_DIR . '/' . basename($scriptName);
+            if (file_exists($scriptPath)) {
+                $content = file_get_contents($scriptPath);
+                $results = executeDuckyScript($content);
+                $response['success'] = true;
+                $response['message'] = 'Script executed';
+                $response['results'] = $results;
+            } else {
+                $response['message'] = 'Script not found';
+            }
+            break;
+
+        case 'run_ducky':
+            $script = $_POST['script'] ?? '';
+            if ($script) {
+                $results = executeDuckyScript($script);
+                $response['success'] = true;
+                $response['message'] = 'DuckyScript executed';
+                $response['results'] = $results;
+            }
+            break;
+
+        case 'get_script':
+            $scriptName = $_POST['script'] ?? '';
+            $scriptPath = SCRIPTS_DIR . '/' . basename($scriptName);
+            if (file_exists($scriptPath)) {
+                $response['success'] = true;
+                $response['content'] = file_get_contents($scriptPath);
+            } else {
+                $response['message'] = 'Script not found';
+            }
+            break;
+
+        case 'save_script':
+            $scriptName = $_POST['name'] ?? '';
+            $content = $_POST['content'] ?? '';
+            if ($scriptName) {
+                // Ensure .txt extension
+                if (pathinfo($scriptName, PATHINFO_EXTENSION) !== 'txt') {
+                    $scriptName .= '.txt';
+                }
+                // Sanitize filename
+                $scriptName = preg_replace('/[^a-zA-Z0-9_\-\.]/', '', $scriptName);
+                $scriptPath = SCRIPTS_DIR . '/' . $scriptName;
+
+                if (!is_dir(SCRIPTS_DIR)) {
+                    @mkdir(SCRIPTS_DIR, 0755, true);
+                }
+
+                if (file_put_contents($scriptPath, $content) !== false) {
+                    $response['success'] = true;
+                    $response['message'] = 'Script saved';
+                    $response['filename'] = $scriptName;
+                } else {
+                    $response['message'] = 'Failed to save script';
+                }
+            }
+            break;
+
+        case 'delete_script':
+            $scriptName = $_POST['script'] ?? '';
+            $scriptPath = SCRIPTS_DIR . '/' . basename($scriptName);
+            if (file_exists($scriptPath) && unlink($scriptPath)) {
+                $response['success'] = true;
+                $response['message'] = 'Script deleted';
+            } else {
+                $response['message'] = 'Failed to delete script';
+            }
+            break;
+
+        case 'list_scripts':
+            $response['success'] = true;
+            $response['scripts'] = getScriptFiles();
+            break;
+
+        case 'upload_file':
+            if (isset($_FILES['file'])) {
+                $mount = mountUSBStorage();
+                if ($mount['mounted']) {
+                    $filename = basename($_FILES['file']['name']);
+                    $destPath = USB_MOUNT . '/' . $filename;
+                    if (move_uploaded_file($_FILES['file']['tmp_name'], $destPath)) {
+                        $response['success'] = true;
+                        $response['message'] = 'File uploaded: ' . $filename;
+                    } else {
+                        $response['message'] = 'Failed to move uploaded file';
+                    }
+                } else {
+                    $response['message'] = 'USB storage not available: ' . $mount['message'];
+                }
+            } else {
+                $response['message'] = 'No file uploaded';
+            }
+            break;
+
+        case 'list_usb_files':
+            $result = getUSBFiles();
+            $response['success'] = ($result['error'] === null);
+            $response['files'] = $result['files'];
+            $response['message'] = $result['error'] ?? 'OK';
+            break;
+
+        case 'delete_usb_file':
+            $filename = $_POST['filename'] ?? '';
+            if ($filename) {
+                $mount = mountUSBStorage();
+                if ($mount['mounted']) {
+                    $filePath = USB_MOUNT . '/' . basename($filename);
+                    if (file_exists($filePath)) {
+                        if (is_dir($filePath)) {
+                            $response['message'] = 'Cannot delete directories';
+                        } elseif (unlink($filePath)) {
+                            $response['success'] = true;
+                            $response['message'] = 'File deleted';
+                        } else {
+                            $response['message'] = 'Failed to delete file';
+                        }
+                    } else {
+                        $response['message'] = 'File not found';
+                    }
+                } else {
+                    $response['message'] = 'USB storage not available';
+                }
+            }
+            break;
+
+        case 'get_network':
+            $interfaces = getAllNetworkInterfaces();
+            $networkData = [];
+            foreach ($interfaces as $iface) {
+                $networkData[$iface] = getNetworkInfo($iface);
+            }
+            $response['success'] = true;
+            $response['interfaces'] = $networkData;
+            break;
+    }
+
+    echo json_encode($response);
+    exit;
+}
+
+// Get initial data
+$scripts = getScriptFiles();
+$hidAvailable = file_exists(HID_DEVICE);
+$usbImageExists = file_exists(USB_IMAGE);
+
+// Logo path
+$docroot = $_SERVER['DOCUMENT_ROOT'] ?? __DIR__;
+$logoPath = '';
+foreach (['images/picycle.png', 'assets/images/picycle.png', 'picycle.png'] as $try) {
+    if (file_exists($docroot . '/' . $try)) {
+        $logoPath = '/' . $try;
+        break;
+    }
+}
 
 header('Content-Type: text/html; charset=utf-8');
-
-?><!doctype html>
+?><!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PiCycle</title>
-  <style>
-    body { font-family: Arial, Helvetica, sans-serif; margin: 18px; line-height: 1.35; }
-    .wrap { max-width: 980px; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 12px 0; }
-    table { border-collapse: collapse; width: 100%; }
-    td, th { border-bottom: 1px solid #eee; padding: 8px; text-align: left; }
-    .ok { color: #0a7a0a; font-weight: 700; }
-    .bad { color: #b00020; font-weight: 700; }
-    .mono { font-family: Consolas, Menlo, monospace; }
-    a { text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .small { font-size: 12px; color: #555; }
-    .logo { max-width: 320px; height: auto; display: block; margin: 10px 0; }
-  </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PiCycle Control Panel</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            margin: 0;
+            padding: 18px;
+            line-height: 1.4;
+            background: #f5f5f5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .header img { max-width: 150px; height: auto; }
+        .header h1 { margin: 0; color: #333; }
+
+        .card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .card h3 {
+            margin: 0 0 12px 0;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #007bff;
+            color: #333;
+        }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 16px; }
+
+        .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+        .status-ok { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        .status-warn { background: #fff3cd; color: #856404; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        td, th { padding: 6px 8px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; font-weight: 600; }
+
+        .mono { font-family: Consolas, Monaco, 'Courier New', monospace; }
+
+        button, .btn {
+            display: inline-block;
+            padding: 8px 16px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+        }
+        button:hover, .btn:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #1e7e34; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #bd2130; }
+        .btn-secondary { background: #6c757d; }
+        .btn-secondary:hover { background: #545b62; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+        input[type="text"], input[type="file"], select, textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        textarea { resize: vertical; min-height: 150px; font-family: Consolas, Monaco, monospace; }
+
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; margin-bottom: 4px; font-weight: 600; }
+
+        .keyboard-container { margin-top: 12px; }
+        .keyboard-row { display: flex; gap: 4px; margin-bottom: 4px; justify-content: center; }
+        .key {
+            min-width: 38px;
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+            border: 1px solid #bbb;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            user-select: none;
+            transition: all 0.1s;
+        }
+        .key:hover { background: linear-gradient(180deg, #e9ecef 0%, #dee2e6 100%); }
+        .key:active, .key.active {
+            background: linear-gradient(180deg, #007bff 0%, #0056b3 100%);
+            color: white;
+            border-color: #004085;
+        }
+        .key-wide { min-width: 60px; }
+        .key-wider { min-width: 80px; }
+        .key-widest { min-width: 100px; }
+        .key-space { min-width: 250px; }
+        .key-fn { background: linear-gradient(180deg, #6c757d 0%, #545b62 100%); color: white; }
+        .key-mod { background: linear-gradient(180deg, #495057 0%, #343a40 100%); color: white; }
+
+        .modifier-row { margin-bottom: 10px; }
+        .modifier-row label {
+            display: inline-flex;
+            align-items: center;
+            margin-right: 15px;
+            cursor: pointer;
+        }
+        .modifier-row input { margin-right: 5px; }
+
+        .text-input-group { display: flex; gap: 8px; margin-bottom: 12px; }
+        .text-input-group input { flex: 1; }
+
+        .file-list { max-height: 200px; overflow-y: auto; }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .file-item:last-child { border-bottom: none; }
+        .file-info { display: flex; gap: 15px; font-size: 13px; color: #666; }
+
+        .script-controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .script-controls select { max-width: 200px; }
+
+        .log {
+            background: #1e1e1e;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Consolas, Monaco, monospace;
+            font-size: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 2px 0; }
+        .log-error { color: #f44; }
+        .log-success { color: #4f4; }
+
+        .tabs { display: flex; border-bottom: 2px solid #ddd; margin-bottom: 12px; }
+        .tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            color: #666;
+        }
+        .tab:hover { color: #333; }
+        .tab.active { border-bottom-color: #007bff; color: #007bff; font-weight: 600; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        @media (max-width: 768px) {
+            .keyboard-row { flex-wrap: wrap; }
+            .key { min-width: 32px; height: 32px; font-size: 10px; }
+            .key-space { min-width: 150px; }
+        }
+    </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="card">
-    <div class="mono">PiCycle web server OK</div>
-    <div class="small mono">Client IP: <?= h($clientIp) ?></div>
-    <div class="small mono">Server IP: <?= h($serverIp) ?></div>
-    <div class="small mono">UTC Time: <?= h($nowUtc) ?></div>
-    <?php if ($logoWeb !== ''): ?>
-      <img class="logo" alt="PiCycle" src="<?= h($logoWeb) ?>" />
-    <?php else: ?>
-      <div class="small">No local picycle.png found in document root or assets directory.</div>
-    <?php endif; ?>
-  </div>
-
-  <div class="card">
-    <h3>Checks</h3>
-    <table>
-      <tbody>
-      <?php foreach ($checks as $label => $pass): ?>
-        <tr>
-          <td><?= h($label) ?></td>
-          <td class="<?= $pass ? 'ok' : 'bad' ?>"><?= $pass ? 'OK' : 'FAIL' ?></td>
-        </tr>
-      <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="card">
-    <h3>Web root files</h3>
-    <?php if (!$filesRoot): ?>
-      <div class="small">No readable directory listing for <?= h($docroot) ?></div>
-    <?php else: ?>
-      <table>
-        <thead>
-          <tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr>
-        </thead>
-        <tbody>
-        <?php foreach ($filesRoot as $f): ?>
-          <?php
-            $name = $f['name'];
-            $href = '/' . rawurlencode($name);
-            $type = $f['is_dir'] ? 'dir' : 'file';
-            $size = ($f['size'] === null) ? '' : (string)$f['size'];
-            $mtime = $f['mtime'] ? gmdate('c', (int)$f['mtime']) : '';
-          ?>
-          <tr>
-            <td class="mono">
-              <?php if ($f['is_dir']): ?>
-                <?= h($name) ?>
-              <?php else: ?>
-                <a href="<?= h($href) ?>"><?= h($name) ?></a>
-              <?php endif; ?>
-            </td>
-            <td><?= h($type) ?></td>
-            <td class="mono"><?= h($size) ?></td>
-            <td class="mono"><?= h($mtime) ?></td>
-          </tr>
-        <?php endforeach; ?>
-        </tbody>
-      </table>
-    <?php endif; ?>
-  </div>
-
-  <div class="card">
-    <h3>/assets files</h3>
-    <?php if (!$filesAssets): ?>
-      <div class="small">No readable directory listing for <?= h($docroot . '/assets') ?></div>
-    <?php else: ?>
-      <table>
-        <thead>
-          <tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr>
-        </thead>
-        <tbody>
-        <?php foreach ($filesAssets as $f): ?>
-          <?php
-            $name = $f['name'];
-            $href = '/assets/' . rawurlencode($name);
-            $type = $f['is_dir'] ? 'dir' : 'file';
-            $size = ($f['size'] === null) ? '' : (string)$f['size'];
-            $mtime = $f['mtime'] ? gmdate('c', (int)$f['mtime']) : '';
-          ?>
-          <tr>
-            <td class="mono">
-              <?php if ($f['is_dir']): ?>
-                <?= h($name) ?>
-              <?php else: ?>
-                <a href="<?= h($href) ?>"><?= h($name) ?></a>
-              <?php endif; ?>
-            </td>
-            <td><?= h($type) ?></td>
-            <td class="mono"><?= h($size) ?></td>
-            <td class="mono"><?= h($mtime) ?></td>
-          </tr>
-        <?php endforeach; ?>
-        </tbody>
-      </table>
-    <?php endif; ?>
-  </div>
-
-  <div class="card">
-    <h3>PHP</h3>
-    <div class="small mono">
-      Version: <?= h(PHP_VERSION) ?><br />
-      SAPI: <?= h(PHP_SAPI) ?><br />
-      Loaded ini: <?= h((string)php_ini_loaded_file()) ?>
+<div class="container">
+    <div class="header">
+        <?php if ($logoPath): ?>
+            <img src="<?= h($logoPath) ?>" alt="PiCycle">
+        <?php endif; ?>
+        <div>
+            <h1>PiCycle Control Panel</h1>
+            <div style="margin-top: 5px;">
+                <span class="status <?= $hidAvailable ? 'status-ok' : 'status-error' ?>">
+                    HID: <?= $hidAvailable ? 'Ready' : 'Not Available' ?>
+                </span>
+                <span class="status <?= $usbImageExists ? 'status-ok' : 'status-warn' ?>">
+                    USB Storage: <?= $usbImageExists ? 'Ready' : 'Not Found' ?>
+                </span>
+            </div>
+        </div>
     </div>
-  </div>
 
+    <div class="grid">
+        <!-- Virtual Keyboard -->
+        <div class="card">
+            <h3>Virtual Keyboard</h3>
+
+            <div class="text-input-group">
+                <input type="text" id="textInput" placeholder="Type text to send...">
+                <button onclick="sendText()">Send Text</button>
+            </div>
+
+            <div class="modifier-row">
+                <label><input type="checkbox" id="mod-ctrl"> Ctrl</label>
+                <label><input type="checkbox" id="mod-shift"> Shift</label>
+                <label><input type="checkbox" id="mod-alt"> Alt</label>
+                <label><input type="checkbox" id="mod-gui"> Win/Cmd</label>
+            </div>
+
+            <div class="keyboard-container">
+                <!-- Function keys -->
+                <div class="keyboard-row">
+                    <div class="key key-fn" data-key="esc">Esc</div>
+                    <div class="key key-fn" data-key="f1">F1</div>
+                    <div class="key key-fn" data-key="f2">F2</div>
+                    <div class="key key-fn" data-key="f3">F3</div>
+                    <div class="key key-fn" data-key="f4">F4</div>
+                    <div class="key key-fn" data-key="f5">F5</div>
+                    <div class="key key-fn" data-key="f6">F6</div>
+                    <div class="key key-fn" data-key="f7">F7</div>
+                    <div class="key key-fn" data-key="f8">F8</div>
+                    <div class="key key-fn" data-key="f9">F9</div>
+                    <div class="key key-fn" data-key="f10">F10</div>
+                    <div class="key key-fn" data-key="f11">F11</div>
+                    <div class="key key-fn" data-key="f12">F12</div>
+                </div>
+
+                <!-- Number row -->
+                <div class="keyboard-row">
+                    <div class="key" data-key="`">`</div>
+                    <div class="key" data-key="1">1</div>
+                    <div class="key" data-key="2">2</div>
+                    <div class="key" data-key="3">3</div>
+                    <div class="key" data-key="4">4</div>
+                    <div class="key" data-key="5">5</div>
+                    <div class="key" data-key="6">6</div>
+                    <div class="key" data-key="7">7</div>
+                    <div class="key" data-key="8">8</div>
+                    <div class="key" data-key="9">9</div>
+                    <div class="key" data-key="0">0</div>
+                    <div class="key" data-key="-">-</div>
+                    <div class="key" data-key="=">=</div>
+                    <div class="key key-wide" data-key="backspace">Back</div>
+                </div>
+
+                <!-- QWERTY row -->
+                <div class="keyboard-row">
+                    <div class="key key-wide" data-key="tab">Tab</div>
+                    <div class="key" data-key="q">Q</div>
+                    <div class="key" data-key="w">W</div>
+                    <div class="key" data-key="e">E</div>
+                    <div class="key" data-key="r">R</div>
+                    <div class="key" data-key="t">T</div>
+                    <div class="key" data-key="y">Y</div>
+                    <div class="key" data-key="u">U</div>
+                    <div class="key" data-key="i">I</div>
+                    <div class="key" data-key="o">O</div>
+                    <div class="key" data-key="p">P</div>
+                    <div class="key" data-key="[">[</div>
+                    <div class="key" data-key="]">]</div>
+                    <div class="key" data-key="\">\</div>
+                </div>
+
+                <!-- Home row -->
+                <div class="keyboard-row">
+                    <div class="key key-wider" data-key="caps">Caps</div>
+                    <div class="key" data-key="a">A</div>
+                    <div class="key" data-key="s">S</div>
+                    <div class="key" data-key="d">D</div>
+                    <div class="key" data-key="f">F</div>
+                    <div class="key" data-key="g">G</div>
+                    <div class="key" data-key="h">H</div>
+                    <div class="key" data-key="j">J</div>
+                    <div class="key" data-key="k">K</div>
+                    <div class="key" data-key="l">L</div>
+                    <div class="key" data-key=";">;</div>
+                    <div class="key" data-key="'">'</div>
+                    <div class="key key-wider" data-key="enter">Enter</div>
+                </div>
+
+                <!-- Shift row -->
+                <div class="keyboard-row">
+                    <div class="key key-widest key-mod" data-modifier="shift">Shift</div>
+                    <div class="key" data-key="z">Z</div>
+                    <div class="key" data-key="x">X</div>
+                    <div class="key" data-key="c">C</div>
+                    <div class="key" data-key="v">V</div>
+                    <div class="key" data-key="b">B</div>
+                    <div class="key" data-key="n">N</div>
+                    <div class="key" data-key="m">M</div>
+                    <div class="key" data-key=",">,</div>
+                    <div class="key" data-key=".">.</div>
+                    <div class="key" data-key="/">/</div>
+                    <div class="key key-widest key-mod" data-modifier="shift">Shift</div>
+                </div>
+
+                <!-- Bottom row -->
+                <div class="keyboard-row">
+                    <div class="key key-wide key-mod" data-modifier="ctrl">Ctrl</div>
+                    <div class="key key-wide key-mod" data-modifier="gui">Win</div>
+                    <div class="key key-wide key-mod" data-modifier="alt">Alt</div>
+                    <div class="key key-space" data-key="space">Space</div>
+                    <div class="key key-wide key-mod" data-modifier="alt">Alt</div>
+                    <div class="key key-wide key-mod" data-modifier="gui">Win</div>
+                    <div class="key key-wide key-mod" data-modifier="ctrl">Ctrl</div>
+                </div>
+
+                <!-- Navigation row -->
+                <div class="keyboard-row" style="margin-top: 8px;">
+                    <div class="key key-fn" data-key="print">PrtSc</div>
+                    <div class="key key-fn" data-key="scroll">ScrLk</div>
+                    <div class="key key-fn" data-key="pause">Pause</div>
+                    <div class="key key-fn" data-key="insert">Ins</div>
+                    <div class="key key-fn" data-key="home">Home</div>
+                    <div class="key key-fn" data-key="pageup">PgUp</div>
+                    <div class="key key-fn" data-key="delete">Del</div>
+                    <div class="key key-fn" data-key="end">End</div>
+                    <div class="key key-fn" data-key="pagedown">PgDn</div>
+                </div>
+
+                <!-- Arrow keys -->
+                <div class="keyboard-row">
+                    <div class="key" data-key="up">&#9650;</div>
+                </div>
+                <div class="keyboard-row">
+                    <div class="key" data-key="left">&#9664;</div>
+                    <div class="key" data-key="down">&#9660;</div>
+                    <div class="key" data-key="right">&#9654;</div>
+                </div>
+            </div>
+
+            <div class="log" id="keyboardLog">
+                <div class="log-entry">Keyboard ready. Click keys to send to target.</div>
+            </div>
+        </div>
+
+        <!-- DuckyScript Panel -->
+        <div class="card">
+            <h3>DuckyScript</h3>
+
+            <div class="tabs">
+                <div class="tab active" data-tab="run">Run Script</div>
+                <div class="tab" data-tab="edit">Editor</div>
+            </div>
+
+            <div class="tab-content active" id="tab-run">
+                <div class="script-controls">
+                    <select id="scriptSelect">
+                        <option value="">-- Select Script --</option>
+                        <?php foreach ($scripts as $script): ?>
+                            <option value="<?= h($script['name']) ?>"><?= h($script['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <button onclick="runSelectedScript()" class="btn-success">Run Script</button>
+                    <button onclick="loadScriptForEdit()">Edit</button>
+                    <button onclick="deleteSelectedScript()" class="btn-danger btn-sm">Delete</button>
+                    <button onclick="refreshScriptList()" class="btn-secondary btn-sm">Refresh</button>
+                </div>
+
+                <div class="form-group">
+                    <label>Quick DuckyScript (run directly):</label>
+                    <textarea id="quickDucky" placeholder="GUI r&#10;DELAY 500&#10;STRING notepad&#10;ENTER"></textarea>
+                </div>
+                <button onclick="runQuickDucky()" class="btn-success">Execute DuckyScript</button>
+            </div>
+
+            <div class="tab-content" id="tab-edit">
+                <div class="form-group">
+                    <label>Filename:</label>
+                    <input type="text" id="scriptFilename" placeholder="MyScript.txt">
+                </div>
+                <div class="form-group">
+                    <label>Script Content:</label>
+                    <textarea id="scriptContent" style="min-height: 200px;" placeholder="REM My DuckyScript&#10;GUI r&#10;DELAY 500&#10;STRING notepad&#10;ENTER&#10;DELAY 1000&#10;STRING Hello World!"></textarea>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button onclick="saveScript()" class="btn-success">Save Script</button>
+                    <button onclick="newScript()" class="btn-secondary">New</button>
+                </div>
+            </div>
+
+            <div class="log" id="duckyLog" style="margin-top: 12px;">
+                <div class="log-entry">DuckyScript ready.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <!-- Network Information -->
+        <div class="card">
+            <h3>Network Information</h3>
+            <div id="networkInfo">Loading network information...</div>
+            <button onclick="refreshNetwork()" class="btn-secondary btn-sm" style="margin-top: 10px;">Refresh Network</button>
+        </div>
+
+        <!-- USB Storage -->
+        <div class="card">
+            <h3>USB Mass Storage</h3>
+
+            <div class="form-group">
+                <label>Upload File to USB Storage:</label>
+                <div style="display: flex; gap: 8px;">
+                    <input type="file" id="uploadFile">
+                    <button onclick="uploadFile()">Upload</button>
+                </div>
+            </div>
+
+            <div style="margin-top: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <strong>Files on USB Storage:</strong>
+                    <button onclick="refreshUSBFiles()" class="btn-secondary btn-sm">Refresh</button>
+                </div>
+                <div class="file-list" id="usbFileList">
+                    <div class="file-item">Loading...</div>
+                </div>
+            </div>
+
+            <div id="usbLog" class="log" style="margin-top: 12px;">
+                <div class="log-entry">USB Storage: <?= $usbImageExists ? 'Image found at ' . USB_IMAGE : 'Image not found' ?></div>
+            </div>
+        </div>
+    </div>
 </div>
+
+<script>
+// API helper
+async function api(action, data = {}) {
+    const formData = new FormData();
+    formData.append('action', action);
+    for (const [key, value] of Object.entries(data)) {
+        if (value instanceof File) {
+            formData.append(key, value);
+        } else {
+            formData.append(key, value);
+        }
+    }
+
+    try {
+        const response = await fetch(window.location.href, {
+            method: 'POST',
+            body: formData
+        });
+        return await response.json();
+    } catch (error) {
+        return { success: false, message: error.message };
+    }
+}
+
+// Logging helpers
+function log(elementId, message, type = '') {
+    const logEl = document.getElementById(elementId);
+    const entry = document.createElement('div');
+    entry.className = 'log-entry' + (type ? ' log-' + type : '');
+    entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Get current modifiers
+function getModifiers() {
+    let mod = 0;
+    if (document.getElementById('mod-ctrl').checked) mod |= 0x01;
+    if (document.getElementById('mod-shift').checked) mod |= 0x02;
+    if (document.getElementById('mod-alt').checked) mod |= 0x04;
+    if (document.getElementById('mod-gui').checked) mod |= 0x08;
+    return mod;
+}
+
+// Send a key
+async function sendKey(key) {
+    const modifier = getModifiers();
+    const result = await api('send_key', { key, modifier });
+    log('keyboardLog', result.success ? `Sent: ${key}` : `Error: ${result.message}`, result.success ? 'success' : 'error');
+}
+
+// Send text
+async function sendText() {
+    const text = document.getElementById('textInput').value;
+    if (!text) return;
+    const result = await api('type_string', { text });
+    log('keyboardLog', result.success ? `Typed: ${text}` : `Error: ${result.message}`, result.success ? 'success' : 'error');
+    document.getElementById('textInput').value = '';
+}
+
+// Keyboard click handler
+document.querySelectorAll('.key[data-key]').forEach(key => {
+    key.addEventListener('click', () => {
+        sendKey(key.dataset.key);
+    });
+});
+
+// Modifier toggle keys
+document.querySelectorAll('.key[data-modifier]').forEach(key => {
+    key.addEventListener('click', () => {
+        const mod = key.dataset.modifier;
+        const checkbox = document.getElementById('mod-' + mod);
+        checkbox.checked = !checkbox.checked;
+        key.classList.toggle('active', checkbox.checked);
+    });
+});
+
+// Text input enter key
+document.getElementById('textInput').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') sendText();
+});
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('tab-' + tabName).classList.add('active');
+    });
+});
+
+// DuckyScript functions
+async function runSelectedScript() {
+    const select = document.getElementById('scriptSelect');
+    const script = select.value;
+    if (!script) {
+        log('duckyLog', 'No script selected', 'error');
+        return;
+    }
+    log('duckyLog', 'Running: ' + script);
+    const result = await api('run_script', { script });
+    if (result.success) {
+        log('duckyLog', 'Script completed', 'success');
+        if (result.results) {
+            result.results.forEach(r => log('duckyLog', '  ' + r));
+        }
+    } else {
+        log('duckyLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+async function runQuickDucky() {
+    const script = document.getElementById('quickDucky').value;
+    if (!script.trim()) {
+        log('duckyLog', 'No script to run', 'error');
+        return;
+    }
+    log('duckyLog', 'Executing DuckyScript...');
+    const result = await api('run_ducky', { script });
+    if (result.success) {
+        log('duckyLog', 'Execution completed', 'success');
+        if (result.results) {
+            result.results.forEach(r => log('duckyLog', '  ' + r));
+        }
+    } else {
+        log('duckyLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+async function loadScriptForEdit() {
+    const select = document.getElementById('scriptSelect');
+    const script = select.value;
+    if (!script) {
+        log('duckyLog', 'No script selected', 'error');
+        return;
+    }
+    const result = await api('get_script', { script });
+    if (result.success) {
+        document.getElementById('scriptFilename').value = script;
+        document.getElementById('scriptContent').value = result.content;
+        // Switch to edit tab
+        document.querySelector('.tab[data-tab="edit"]').click();
+        log('duckyLog', 'Loaded: ' + script, 'success');
+    } else {
+        log('duckyLog', 'Error loading script: ' + result.message, 'error');
+    }
+}
+
+async function saveScript() {
+    const name = document.getElementById('scriptFilename').value.trim();
+    const content = document.getElementById('scriptContent').value;
+    if (!name) {
+        log('duckyLog', 'Please enter a filename', 'error');
+        return;
+    }
+    const result = await api('save_script', { name, content });
+    if (result.success) {
+        log('duckyLog', 'Saved: ' + result.filename, 'success');
+        refreshScriptList();
+    } else {
+        log('duckyLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+function newScript() {
+    document.getElementById('scriptFilename').value = '';
+    document.getElementById('scriptContent').value = '';
+    log('duckyLog', 'New script started');
+}
+
+async function deleteSelectedScript() {
+    const select = document.getElementById('scriptSelect');
+    const script = select.value;
+    if (!script) {
+        log('duckyLog', 'No script selected', 'error');
+        return;
+    }
+    if (!confirm('Delete script: ' + script + '?')) return;
+    const result = await api('delete_script', { script });
+    if (result.success) {
+        log('duckyLog', 'Deleted: ' + script, 'success');
+        refreshScriptList();
+    } else {
+        log('duckyLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+async function refreshScriptList() {
+    const result = await api('list_scripts');
+    const select = document.getElementById('scriptSelect');
+    select.innerHTML = '<option value="">-- Select Script --</option>';
+    if (result.success && result.scripts) {
+        result.scripts.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.name;
+            opt.textContent = s.name;
+            select.appendChild(opt);
+        });
+    }
+    log('duckyLog', 'Script list refreshed');
+}
+
+// Network functions
+async function refreshNetwork() {
+    const container = document.getElementById('networkInfo');
+    container.innerHTML = 'Loading...';
+
+    const result = await api('get_network');
+    if (!result.success) {
+        container.innerHTML = '<span class="status status-error">Error loading network info</span>';
+        return;
+    }
+
+    let html = '';
+    for (const [iface, info] of Object.entries(result.interfaces)) {
+        const isUSB = iface === 'usb0';
+        const stateClass = info.state === 'up' ? 'status-ok' : 'status-error';
+
+        html += `<div style="margin-bottom: 15px;">
+            <strong>${iface}</strong> ${isUSB ? '(USB Network)' : '(System Network)'}
+            <span class="status ${stateClass}">${info.state}</span>
+            <table style="margin-top: 5px;">
+                <tr><td>IP Address</td><td class="mono">${info.ip || 'Not assigned'}</td></tr>
+                <tr><td>Netmask</td><td class="mono">${info.netmask || '-'}</td></tr>
+                <tr><td>Broadcast</td><td class="mono">${info.broadcast || '-'}</td></tr>
+                <tr><td>MAC Address</td><td class="mono">${info.mac || '-'}</td></tr>
+                <tr><td>Gateway</td><td class="mono">${info.gateway || '-'}</td></tr>
+                <tr><td>DNS</td><td class="mono">${info.dns.length ? info.dns.join(', ') : '-'}</td></tr>
+            </table>
+        </div>`;
+    }
+
+    container.innerHTML = html || '<span class="status status-warn">No network interfaces found</span>';
+}
+
+// USB Storage functions
+async function refreshUSBFiles() {
+    const container = document.getElementById('usbFileList');
+    container.innerHTML = '<div class="file-item">Loading...</div>';
+
+    const result = await api('list_usb_files');
+    if (!result.success) {
+        container.innerHTML = `<div class="file-item"><span class="status status-error">${result.message}</span></div>`;
+        log('usbLog', 'Error: ' + result.message, 'error');
+        return;
+    }
+
+    if (!result.files || result.files.length === 0) {
+        container.innerHTML = '<div class="file-item">No files found</div>';
+        return;
+    }
+
+    container.innerHTML = result.files.map(f => `
+        <div class="file-item">
+            <span class="mono">${f.is_dir ? '&#128193; ' : '&#128196; '}${f.name}</span>
+            <div class="file-info">
+                <span>${f.is_dir ? 'Directory' : formatSize(f.size)}</span>
+                ${!f.is_dir ? `<button class="btn-danger btn-sm" onclick="deleteUSBFile('${f.name}')">Delete</button>` : ''}
+            </div>
+        </div>
+    `).join('');
+}
+
+function formatSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+async function uploadFile() {
+    const fileInput = document.getElementById('uploadFile');
+    const file = fileInput.files[0];
+    if (!file) {
+        log('usbLog', 'No file selected', 'error');
+        return;
+    }
+
+    log('usbLog', 'Uploading: ' + file.name);
+    const result = await api('upload_file', { file });
+    if (result.success) {
+        log('usbLog', result.message, 'success');
+        refreshUSBFiles();
+        fileInput.value = '';
+    } else {
+        log('usbLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+async function deleteUSBFile(filename) {
+    if (!confirm('Delete file: ' + filename + '?')) return;
+    const result = await api('delete_usb_file', { filename });
+    if (result.success) {
+        log('usbLog', 'Deleted: ' + filename, 'success');
+        refreshUSBFiles();
+    } else {
+        log('usbLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    refreshNetwork();
+    refreshUSBFiles();
+});
+</script>
 </body>
 </html>
