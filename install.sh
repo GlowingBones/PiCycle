@@ -821,6 +821,11 @@ EOF
         # Configure WiFi AP before reboot
         echo -e "\n${CYAN}${BOLD}Configuring WiFi Access Point before reboot...${NC}"
 
+        # Create log file for WiFi AP setup
+        local ap_log="/var/log/picycle_ap_setup.log"
+        echo "=== PiCycle WiFi AP Setup Log ===" > "$ap_log"
+        echo "Started: $(date)" >> "$ap_log"
+
         # Get password from user
         local wifi_pass=""
         while true; do
@@ -838,20 +843,75 @@ EOF
             fi
             break
         done
+        echo "Password obtained (length: ${#wifi_pass})" >> "$ap_log"
 
         # Install hostapd if needed
         echo -e "${YELLOW}Installing hostapd...${NC}"
-        apt install -y hostapd >/dev/null 2>&1 || true
-        systemctl stop hostapd 2>/dev/null || true
+        echo "Installing hostapd..." >> "$ap_log"
+        apt install -y hostapd >> "$ap_log" 2>&1 || echo "apt install hostapd failed" >> "$ap_log"
 
-        # Disconnect from home WiFi
-        echo -e "${YELLOW}Disconnecting from home WiFi...${NC}"
-        wpa_cli -i wlan0 disconnect 2>/dev/null || true
-        wpa_cli -i wlan0 terminate 2>/dev/null || true
-        systemctl stop wpa_supplicant 2>/dev/null || true
+        # Stop hostapd for now
+        systemctl stop hostapd 2>/dev/null
+        echo "hostapd stopped" >> "$ap_log"
+
+        # === CRITICAL: Completely disable wpa_supplicant ===
+        echo -e "${YELLOW}Disabling wpa_supplicant (home WiFi)...${NC}"
+        echo "" >> "$ap_log"
+        echo "=== Disabling wpa_supplicant ===" >> "$ap_log"
+
+        # Step 1: Disconnect current connection
+        echo "Step 1: Disconnecting wpa_cli..." >> "$ap_log"
+        wpa_cli -i wlan0 disconnect >> "$ap_log" 2>&1 || echo "  wpa_cli disconnect failed (may be ok)" >> "$ap_log"
+
+        # Step 2: Terminate wpa_supplicant process
+        echo "Step 2: Terminating wpa_cli..." >> "$ap_log"
+        wpa_cli -i wlan0 terminate >> "$ap_log" 2>&1 || echo "  wpa_cli terminate failed (may be ok)" >> "$ap_log"
+
+        # Step 3: Stop wpa_supplicant service
+        echo "Step 3: Stopping wpa_supplicant service..." >> "$ap_log"
+        systemctl stop wpa_supplicant >> "$ap_log" 2>&1 || echo "  stop failed" >> "$ap_log"
+
+        # Step 4: Disable wpa_supplicant service so it doesn't start on boot
+        echo "Step 4: Disabling wpa_supplicant service..." >> "$ap_log"
+        systemctl disable wpa_supplicant >> "$ap_log" 2>&1 || echo "  disable failed" >> "$ap_log"
+
+        # Step 5: Mask wpa_supplicant to prevent it from being started
+        echo "Step 5: Masking wpa_supplicant service..." >> "$ap_log"
+        systemctl mask wpa_supplicant >> "$ap_log" 2>&1 || echo "  mask failed" >> "$ap_log"
+
+        # Step 6: Kill any remaining wpa_supplicant processes
+        echo "Step 6: Killing any remaining wpa_supplicant processes..." >> "$ap_log"
+        pkill -9 wpa_supplicant >> "$ap_log" 2>&1 || echo "  no processes to kill" >> "$ap_log"
+
+        # Step 7: Backup and remove wpa_supplicant.conf so it can't reconnect
+        echo "Step 7: Backing up wpa_supplicant.conf..." >> "$ap_log"
+        if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+            cp /etc/wpa_supplicant/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf.backup.$(date +%Y%m%d%H%M%S)
+            # Create empty wpa_supplicant.conf (no networks)
+            cat > /etc/wpa_supplicant/wpa_supplicant.conf << 'WPAEOF'
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=US
+# Networks removed for AP mode - backup saved as wpa_supplicant.conf.backup.*
+WPAEOF
+            echo "  wpa_supplicant.conf backed up and cleared" >> "$ap_log"
+        else
+            echo "  wpa_supplicant.conf not found" >> "$ap_log"
+        fi
+
+        # Verify wpa_supplicant is stopped
+        if pgrep wpa_supplicant > /dev/null; then
+            echo "WARNING: wpa_supplicant still running!" >> "$ap_log"
+            echo -e "${RED}Warning: wpa_supplicant still running${NC}"
+        else
+            echo "SUCCESS: wpa_supplicant stopped" >> "$ap_log"
+            echo -e "${GREEN}✓ wpa_supplicant disabled${NC}"
+        fi
 
         # Create hostapd config
         echo -e "${YELLOW}Configuring Access Point...${NC}"
+        echo "" >> "$ap_log"
+        echo "=== Creating hostapd config ===" >> "$ap_log"
         mkdir -p /etc/hostapd
         cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
 interface=wlan0
@@ -870,23 +930,31 @@ wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 HOSTAPDEOF
         chmod 600 /etc/hostapd/hostapd.conf
+        echo "hostapd.conf created" >> "$ap_log"
 
         # Point hostapd to config
         if [ -f /etc/default/hostapd ]; then
             sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+            echo "Updated /etc/default/hostapd" >> "$ap_log"
         fi
 
         # Create dnsmasq config for wlan0 AP
+        echo "" >> "$ap_log"
+        echo "=== Creating dnsmasq config for wlan0 ===" >> "$ap_log"
         mkdir -p /etc/dnsmasq.d
         cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
+# PiCycle WiFi AP DHCP
 interface=wlan0
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
 WLANEOF
+        echo "wlan0-ap.conf created" >> "$ap_log"
 
         # Add wlan0 static IP to dhcpcd.conf
+        echo "" >> "$ap_log"
+        echo "=== Configuring dhcpcd.conf for wlan0 ===" >> "$ap_log"
         sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
         cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
 
@@ -896,12 +964,32 @@ static ip_address=192.168.4.1/24
 nohook wpa_supplicant
 
 WLANAPEOF
+        echo "dhcpcd.conf updated for wlan0" >> "$ap_log"
 
         # Enable hostapd to start on boot
-        systemctl unmask hostapd 2>/dev/null || true
-        systemctl enable hostapd 2>/dev/null || true
+        echo "" >> "$ap_log"
+        echo "=== Enabling hostapd service ===" >> "$ap_log"
+        systemctl unmask hostapd >> "$ap_log" 2>&1 || echo "unmask failed" >> "$ap_log"
+        systemctl enable hostapd >> "$ap_log" 2>&1 || echo "enable failed" >> "$ap_log"
+
+        # Verify hostapd is enabled
+        if systemctl is-enabled hostapd 2>/dev/null | grep -q enabled; then
+            echo "SUCCESS: hostapd enabled" >> "$ap_log"
+            echo -e "${GREEN}✓ hostapd enabled${NC}"
+        else
+            echo "WARNING: hostapd may not be enabled" >> "$ap_log"
+            echo -e "${RED}Warning: hostapd may not be enabled${NC}"
+        fi
+
+        # Final status
+        echo "" >> "$ap_log"
+        echo "=== Final Status ===" >> "$ap_log"
+        echo "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1)" >> "$ap_log"
+        echo "hostapd service: $(systemctl is-enabled hostapd 2>&1)" >> "$ap_log"
+        echo "Completed: $(date)" >> "$ap_log"
 
         echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
+        echo -e "${CYAN}Log saved to: $ap_log${NC}"
         echo -e "${YELLOW}Rebooting now...${NC}"
         sleep 2
         reboot
