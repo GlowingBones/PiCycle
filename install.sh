@@ -23,7 +23,6 @@ readonly BOLD='\033[1m'
 # Configuration paths
 readonly BOOT_DIR=$([ -d "/boot/firmware" ] && echo "/boot/firmware" || echo "/boot")
 readonly CONFIG_DIR="/etc/picycle"
-readonly REPORT_FILE="$CONFIG_DIR/system_report.json"
 readonly BACKUP_DIR="$CONFIG_DIR/backups"
 readonly GADGET_SCRIPT="/usr/bin/picycle_gadget.sh"
 readonly SERVICE_FILE="/etc/systemd/system/picycle.service"
@@ -56,129 +55,92 @@ EOF
     echo -e "${NC}"
 }
 
-# Show main menu
-show_menu() {
-    echo -e "${WHITE}${BOLD}Main Menu:${NC}\n"
-    echo -e "${GREEN}  [1]${NC} ${MAGENTA}Install PiCycle${NC} - Configure USB composite gadget (HID+Storage+Network)"
-    echo -e "${GREEN}  [2]${NC} ${YELLOW}Diagnostic Report${NC} - Run post-install tests & generate troubleshooting report"
-    echo -e "${GREEN}  [3]${NC} ${BLUE}Restore Defaults${NC} - Remove PiCycle and restore original settings"
-    echo -e "${GREEN}  [4]${NC} ${RED}Exit${NC}\n"
-    echo -e "${GRAY}════════════════════════════════════════════════════════════════${NC}"
-}
-
-# System scan function
-system_scan() {
-    echo -e "\n${CYAN}${BOLD}[*] Initiating comprehensive system scan...${NC}\n"
-    
-    mkdir -p "$CONFIG_DIR"
-    
-    echo -e "${YELLOW}[+] Gathering hardware information...${NC}"
-    
-    local pi_model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "Unknown")
-    local kernel=$(uname -r)
-    local os_info=$(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)
-    local cpu_info=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
-    local memory=$(free -h | awk '/^Mem:/ {print $2}')
-    local disk=$(df -h / | awk 'NR==2 {print $2}')
-    
-    echo -e "${YELLOW}[+] Scanning USB configuration...${NC}"
-    
-    local udc_devices=$(ls /sys/class/udc/ 2>/dev/null)
-    udc_devices=${udc_devices:-none}
-    local dwc2_loaded=$(lsmod | grep -q dwc2 && echo "true" || echo "false")
-    local libcomposite_loaded=$(lsmod | grep -q libcomposite && echo "true" || echo "false")
-    
-    echo -e "${YELLOW}[+] Checking network configuration...${NC}"
-    
-    local wifi_connected=$(iwgetid -r 2>/dev/null || echo "Not connected")
-    local wifi_interface=$(ip link | grep -o "wlan[0-9]" | head -1)
-    wifi_interface=${wifi_interface:-none}
-    
-    cat > "$REPORT_FILE" << EOF
-{
-  "scan_date": "$(date -Iseconds)",
-  "hardware": {
-    "model": "$pi_model",
-    "cpu": "$cpu_info",
-    "memory": "$memory",
-    "disk_size": "$disk"
-  },
-  "operating_system": {
-    "distribution": "$os_info",
-    "kernel": "$kernel",
-    "boot_directory": "$BOOT_DIR"
-  },
-  "usb_gadget": {
-    "udc_controller": "$udc_devices",
-    "dwc2_module_loaded": $dwc2_loaded,
-    "libcomposite_loaded": $libcomposite_loaded
-  },
-  "network": {
-    "wifi_ssid": "$wifi_connected",
-    "wifi_interface": "$wifi_interface"
-  },
-  "picycle_status": {
-    "installed": $([ -f "$GADGET_SCRIPT" ] && echo "true" || echo "false"),
-    "service_enabled": $(systemctl is-enabled picycle.service 2>/dev/null | grep -q enabled && echo "true" || echo "false")
-  }
-}
-EOF
-    
-    echo -e "\n${GREEN}✓ System scan complete!${NC}"
-    echo -e "${CYAN}Report saved to: ${WHITE}$REPORT_FILE${NC}\n"
-    
-    echo -e "${BOLD}${WHITE}═══ System Summary ═══${NC}"
-    echo -e "${GRAY}Model:${NC}        $pi_model"
-    echo -e "${GRAY}OS:${NC}           $os_info"
-    echo -e "${GRAY}WiFi:${NC}         $wifi_connected"
-    echo -e "${GRAY}UDC:${NC}          $udc_devices"
-    echo -e "${GRAY}PiCycle:${NC}      $([ -f "$GADGET_SCRIPT" ] && echo -e "${GREEN}Installed${NC}" || echo -e "${YELLOW}Not installed${NC}")"
-    echo ""
-    
-    read -p "Press Enter to continue..."
-}
-
-# Configure WiFi
+# Configure WiFi AP (Access Point mode with hidden SSID)
 configure_wifi() {
-    echo -e "\n${CYAN}${BOLD}WiFi Configuration${NC}"
-    echo -e "${YELLOW}Do you want to configure WiFi for remote access?${NC}"
-    echo -e "  ${GREEN}[1]${NC} Yes - Configure WiFi now"
-    echo -e "  ${GREEN}[2]${NC} No - Skip WiFi configuration"
-    echo ""
-    
-    read -p "Selection [1-2]: " wifi_choice
-    
-    if [[ "$wifi_choice" == "1" ]]; then
-        read -p "Enter WiFi SSID: " wifi_ssid
-        read -sp "Enter WiFi Password: " wifi_pass
-        echo ""
-        
-        # Configure wpa_supplicant
-        cat >> /etc/wpa_supplicant/wpa_supplicant.conf << WIFIEOF
+    echo -e "\n${CYAN}${BOLD}WiFi Access Point Configuration${NC}"
+    echo -e "${YELLOW}Setting up WiFi Access Point with hidden SSID 'PiCycle'${NC}\n"
 
-network={
-	ssid="$wifi_ssid"
-	psk="$wifi_pass"
-	key_mgmt=WPA-PSK
-}
-WIFIEOF
-        
-        # Restart networking
-        wpa_cli -i wlan0 reconfigure 2>/dev/null || true
-        
-        echo -e "${GREEN}✓ WiFi configured for: $wifi_ssid${NC}"
-        echo -e "${YELLOW}Testing connection...${NC}"
-        sleep 5
-        
-        if iwgetid -r &>/dev/null; then
-            local ip=$(hostname -I | awk '{print $1}')
-            echo -e "${GREEN}✓ Connected! IP: $ip${NC}"
-        else
-            echo -e "${YELLOW}⚠ Not connected yet. May connect after reboot.${NC}"
+    # Get password from user
+    local wifi_pass=""
+    while true; do
+        read -sp "Enter WiFi password (8-63 characters): " wifi_pass
+        echo ""
+        if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
+            echo -e "${RED}Password must be 8-63 characters${NC}"
+            continue
         fi
-    else
-        echo -e "${CYAN}Skipped WiFi configuration${NC}"
-    fi
+        read -sp "Confirm password: " wifi_pass_confirm
+        echo ""
+        if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
+            echo -e "${RED}Passwords do not match${NC}"
+            continue
+        fi
+        break
+    done
+
+    # Install hostapd and dnsmasq for AP mode
+    echo -e "${YELLOW}Installing Access Point packages...${NC}"
+    apt install -y hostapd >/dev/null 2>&1 || true
+
+    # Stop services during configuration
+    systemctl stop hostapd 2>/dev/null || true
+    systemctl stop wpa_supplicant 2>/dev/null || true
+
+    # Configure hostapd for hidden AP
+    cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
+interface=wlan0
+driver=nl80211
+ssid=PiCycle
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=1
+wpa=2
+wpa_passphrase=$wifi_pass
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
+HOSTAPDEOF
+
+    chmod 600 /etc/hostapd/hostapd.conf
+
+    # Point hostapd to config file
+    sed -i 's|^#DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd 2>/dev/null || true
+    echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' >> /etc/default/hostapd 2>/dev/null || true
+
+    # Configure static IP for wlan0 AP
+    # Remove any existing wlan0 config from dhcpcd.conf
+    sed -i '/^interface wlan0/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
+    sed -i '/^# PiCycle WiFi AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
+
+    cat >> /etc/dhcpcd.conf << 'DHCPCDEOF'
+
+# PiCycle WiFi AP
+interface wlan0
+static ip_address=192.168.4.1/24
+nohook wpa_supplicant
+DHCPCDEOF
+
+    # Configure dnsmasq for WiFi AP DHCP
+    cat > /etc/dnsmasq.d/wlan0.conf << 'DNSMASQWLANEOF'
+# PiCycle WiFi AP DHCP
+interface=wlan0
+bind-interfaces
+dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
+dhcp-option=option:router,192.168.4.1
+dhcp-option=option:dns-server,192.168.4.1
+DNSMASQWLANEOF
+
+    # Unmask and enable hostapd
+    systemctl unmask hostapd 2>/dev/null || true
+    systemctl enable hostapd 2>/dev/null || true
+
+    echo -e "${GREEN}✓ WiFi Access Point configured${NC}"
+    echo -e "  ${CYAN}SSID:${NC} PiCycle (hidden)"
+    echo -e "  ${CYAN}IP:${NC} 192.168.4.1"
+    echo -e "  ${CYAN}DHCP Range:${NC} 192.168.4.10 - 192.168.4.100"
 }
 
 # Install PiCycle
@@ -842,7 +804,7 @@ EOF
     echo -e ""
     echo -e "${CYAN}SSH Access:${NC}"
     echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
-    echo -e "  • Via WiFi: ${YELLOW}ssh pi@<wifi-ip>${NC}"
+    echo -e "  • Via WiFi AP: ${YELLOW}ssh pi@192.168.4.1${NC}"
     echo -e ""
     echo -e "${CYAN}Test HID keyboard:${NC}"
     echo -e "  ${YELLOW}sudo python3 picycle.py${NC}\n"
@@ -852,153 +814,11 @@ EOF
     [[ $REPLY =~ ^[Yy]$ ]] && reboot
 }
 
-# Diagnostic report
-diagnostic_report() {
-    echo -e "\n${YELLOW}${BOLD}[*] Running diagnostic tests...${NC}\n"
-    
-    local report_file="/tmp/picycle_diagnostic_$(date +%Y%m%d_%H%M%S).txt"
-    
-    {
-        echo "═══════════════════════════════════════════════════════"
-        echo "PiCycle Diagnostic Report - $(date)"
-        echo "═══════════════════════════════════════════════════════"
-        echo ""
-        echo "--- System Info ---"
-        uname -a
-        cat /proc/device-tree/model 2>/dev/null || echo "Model: Unknown"
-        echo ""
-        echo "--- USB Controller ---"
-        ls -la /sys/class/udc/
-        echo ""
-        echo "--- Loaded Modules ---"
-        lsmod | grep -E "dwc2|libcomposite"
-        echo ""
-        echo "--- Gadget Functions ---"
-        ls -la /sys/kernel/config/usb_gadget/picycle/functions/ 2>/dev/null || echo "No gadget"
-        echo ""
-        echo "--- Network Status ---"
-        ip addr show usb0 2>/dev/null || echo "usb0 not found"
-        ip addr show wlan0 2>/dev/null || echo "wlan0 not found"
-        iwgetid 2>/dev/null || echo "Not connected to WiFi"
-        echo ""
-        echo "--- Storage ---"
-        ls -lh /piusb.img 2>/dev/null || echo "Storage not created"
-        file /piusb.img 2>/dev/null || true
-        echo ""
-        echo "--- Service Status ---"
-        systemctl status picycle.service --no-pager
-        echo ""
-        echo "--- DHCP Server Status ---"
-        ps aux | grep dnsmasq | grep -v grep || echo "dnsmasq not running"
-        echo ""
-        echo "--- DHCP Leases ---"
-        cat /var/lib/misc/dnsmasq.usb0.leases 2>/dev/null || echo "No leases file"
-        echo ""
-        echo "--- Recent Logs ---"
-        journalctl -u picycle.service -n 30 --no-pager
-        echo ""
-        echo "--- USB Messages ---"
-        dmesg | grep -i "usb\|gadget\|rndis" | tail -20
-    } > "$report_file"
-    
-    echo -e "${GREEN}✓ Report: ${WHITE}$report_file${NC}\n"
-    
-    echo -e "${BOLD}${WHITE}═══ Quick Status ═══${NC}"
-    local udc_count=$(ls /sys/class/udc/ 2>/dev/null | wc -l)
-    local service_status=$(systemctl is-active picycle.service 2>/dev/null)
-    local usb0_exists=$(ip link show usb0 &>/dev/null && echo "yes" || echo "no")
-    local hidg0_exists=$([ -c /dev/hidg0 ] && echo "yes" || echo "no")
-    local storage_exists=$([ -f /piusb.img ] && echo "yes" || echo "no")
-    local dhcp_running=$(pgrep -f "dnsmasq.*usb0" > /dev/null && echo "yes" || echo "no")
-
-    echo -e "${GRAY}UDC:${NC}         $([[ $udc_count -gt 0 ]] && echo -e "${GREEN}Found${NC}" || echo -e "${RED}Missing${NC}")"
-    echo -e "${GRAY}Service:${NC}     $([[ "$service_status" == "active" ]] && echo -e "${GREEN}Active${NC}" || echo -e "${RED}Inactive${NC}")"
-    echo -e "${GRAY}USB Network:${NC} $([[ "$usb0_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
-    echo -e "${GRAY}DHCP Server:${NC} $([[ "$dhcp_running" == "yes" ]] && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
-    echo -e "${GRAY}HID Device:${NC}  $([[ "$hidg0_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
-    echo -e "${GRAY}Storage:${NC}     $([[ "$storage_exists" == "yes" ]] && echo -e "${GREEN}Yes${NC}" || echo -e "${RED}No${NC}")"
-
-    if [ -f /piusb.img ]; then
-        local size_mb=$(stat -c%s /piusb.img | awk '{print int($1/1024/1024)}')
-        echo -e "${GRAY}Storage Size:${NC} ${size_mb}MB"
-    fi
-
-    # Show DHCP leases if any
-    if [ -f /var/lib/misc/dnsmasq.usb0.leases ] && [ -s /var/lib/misc/dnsmasq.usb0.leases ]; then
-        echo -e "\n${GRAY}DHCP Leases:${NC}"
-        cat /var/lib/misc/dnsmasq.usb0.leases
-    fi
-    
-    echo ""
-    read -p "Press Enter to continue..."
-}
-
-# Restore defaults
-restore_defaults() {
-    echo -e "\n${BLUE}${BOLD}[*] Restoring original configuration...${NC}\n"
-    
-    read -p "Remove PiCycle and restore backups? (y/n): " -n 1 -r
-    echo
-    [[ ! $REPLY =~ ^[Yy]$ ]] && return
-    
-    echo -e "\n${YELLOW}[1/5] Stopping service...${NC}"
-    systemctl disable picycle.service 2>/dev/null || true
-    systemctl stop picycle.service 2>/dev/null || true
-    
-    echo -e "\n${YELLOW}[2/5] Restoring backups...${NC}"
-    for backup in "$BACKUP_DIR"/*.bak; do
-        if [ -f "$backup" ]; then
-            original="$(basename "${backup%.bak}")"
-            case "$original" in
-                config.txt|cmdline.txt) cp "$backup" "$BOOT_DIR/$original" ;;
-                dhcpcd.conf) cp "$backup" "/etc/$original" ;;
-                modules) cp "$backup" "/etc/$original" ;;
-            esac
-            echo -e "  ${GREEN}✓${NC} Restored $original"
-        fi
-    done
-    
-    echo -e "\n${YELLOW}[3/5] Removing files...${NC}"
-    rm -f "$GADGET_SCRIPT" "$SERVICE_FILE" /piusb.img
-    rm -f /etc/dnsmasq.d/usb0.conf
-    rm -f /var/lib/misc/dnsmasq.usb0.leases
-    pkill -f "dnsmasq.*usb0" 2>/dev/null || true
-    
-    echo -e "\n${YELLOW}[4/5] Cleaning gadget...${NC}"
-    if [ -d /sys/kernel/config/usb_gadget/picycle ]; then
-        cd /sys/kernel/config/usb_gadget/picycle
-        echo "" > UDC 2>/dev/null || true
-        cd /
-        rm -rf /sys/kernel/config/usb_gadget/picycle 2>/dev/null || true
-    fi
-    
-    echo -e "\n${YELLOW}[5/5] Reloading...${NC}"
-    systemctl daemon-reload
-    
-    echo -e "\n${GREEN}${BOLD}✓ Restoration complete!${NC}\n"
-    read -p "Reboot? (y/n): " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]] && reboot
-}
-
 # Main program
 main() {
     check_root
-
-    while true; do
-        show_banner
-        show_menu
-
-        read -p "$(echo -e "${WHITE}Enter selection [1-4]: ${NC}")" choice
-
-        case $choice in
-            1) install_picycle ;;
-            2) diagnostic_report ;;
-            3) restore_defaults ;;
-            4) echo -e "\n${CYAN}Goodbye!${NC}\n"; exit 0 ;;
-            *) echo -e "\n${RED}Invalid selection${NC}\n"; sleep 2 ;;
-        esac
-    done
+    show_banner
+    install_picycle
 }
 
 main "$@"
