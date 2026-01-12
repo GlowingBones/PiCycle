@@ -16,6 +16,7 @@ define('HID_DEVICE', '/dev/hidg0');
 define('USB_IMAGE', '/piusb.img');
 define('USB_MOUNT', '/mnt/piusb');
 define('SCRIPTS_DIR', __DIR__ . '/Scripts');
+define('WEBSERVER_UPLOADS', __DIR__ . '/uploads');
 
 // Security helper
 function h(string $s): string {
@@ -532,21 +533,95 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         case 'upload_file':
             if (isset($_FILES['file'])) {
-                $mount = mountUSBStorage();
-                if ($mount['mounted']) {
-                    $filename = basename($_FILES['file']['name']);
-                    $destPath = USB_MOUNT . '/' . $filename;
+                $destination = $_POST['destination'] ?? 'usb';
+                $filename = basename($_FILES['file']['name']);
+                $uploadError = $_FILES['file']['error'];
+
+                // Check for upload errors first
+                if ($uploadError !== UPLOAD_ERR_OK) {
+                    $errorMessages = [
+                        UPLOAD_ERR_INI_SIZE => 'File exceeds upload_max_filesize',
+                        UPLOAD_ERR_FORM_SIZE => 'File exceeds MAX_FILE_SIZE',
+                        UPLOAD_ERR_PARTIAL => 'File only partially uploaded',
+                        UPLOAD_ERR_NO_FILE => 'No file was uploaded',
+                        UPLOAD_ERR_NO_TMP_DIR => 'Missing temp folder',
+                        UPLOAD_ERR_CANT_WRITE => 'Failed to write to disk',
+                        UPLOAD_ERR_EXTENSION => 'Upload stopped by extension'
+                    ];
+                    $response['message'] = $errorMessages[$uploadError] ?? 'Upload error: ' . $uploadError;
+                    break;
+                }
+
+                if ($destination === 'webserver') {
+                    // Upload to webserver directory
+                    if (!is_dir(WEBSERVER_UPLOADS)) {
+                        @mkdir(WEBSERVER_UPLOADS, 0755, true);
+                    }
+                    $destPath = WEBSERVER_UPLOADS . '/' . $filename;
                     if (move_uploaded_file($_FILES['file']['tmp_name'], $destPath)) {
                         $response['success'] = true;
-                        $response['message'] = 'File uploaded: ' . $filename;
+                        $response['message'] = 'Uploaded to webserver: ' . $filename;
                     } else {
-                        $response['message'] = 'Failed to move uploaded file';
+                        $response['message'] = 'Failed to save file to webserver';
                     }
                 } else {
-                    $response['message'] = 'USB storage not available: ' . $mount['message'];
+                    // Upload to USB mass storage
+                    $mount = mountUSBStorage();
+                    if ($mount['mounted']) {
+                        $destPath = USB_MOUNT . '/' . $filename;
+                        if (move_uploaded_file($_FILES['file']['tmp_name'], $destPath)) {
+                            // Sync filesystem to ensure data is written
+                            shell_exec('sync');
+                            // Unmount so Windows can see the changes
+                            unmountUSBStorage();
+                            $response['success'] = true;
+                            $response['message'] = 'Uploaded to USB: ' . $filename . ' (unmounted for Windows access)';
+                        } else {
+                            $response['message'] = 'Failed to copy file to USB storage';
+                        }
+                    } else {
+                        $response['message'] = 'USB storage not available: ' . $mount['message'];
+                    }
                 }
             } else {
                 $response['message'] = 'No file uploaded';
+            }
+            break;
+
+        case 'list_webserver_files':
+            if (!is_dir(WEBSERVER_UPLOADS)) {
+                @mkdir(WEBSERVER_UPLOADS, 0755, true);
+            }
+            $files = [];
+            $items = @scandir(WEBSERVER_UPLOADS);
+            if ($items) {
+                foreach ($items as $item) {
+                    if ($item[0] === '.') continue;
+                    $path = WEBSERVER_UPLOADS . '/' . $item;
+                    if (is_file($path)) {
+                        $files[] = [
+                            'name' => $item,
+                            'size' => filesize($path),
+                            'mtime' => filemtime($path)
+                        ];
+                    }
+                }
+            }
+            usort($files, function($a, $b) { return strcasecmp($a['name'], $b['name']); });
+            $response['success'] = true;
+            $response['files'] = $files;
+            break;
+
+        case 'delete_webserver_file':
+            $filename = $_POST['filename'] ?? '';
+            if ($filename) {
+                $filePath = WEBSERVER_UPLOADS . '/' . basename($filename);
+                if (file_exists($filePath) && is_file($filePath) && unlink($filePath)) {
+                    $response['success'] = true;
+                    $response['message'] = 'File deleted';
+                } else {
+                    $response['message'] = 'Failed to delete file';
+                }
             }
             break;
 
@@ -699,22 +774,24 @@ header('Content-Type: text/html; charset=utf-8');
         .form-group { margin-bottom: 12px; }
         .form-group label { display: block; margin-bottom: 4px; font-weight: 600; }
 
-        .keyboard-container { margin-top: 12px; }
-        .keyboard-row { display: flex; gap: 4px; margin-bottom: 4px; justify-content: center; }
+        .keyboard-container { margin-top: 12px; overflow-x: auto; }
+        .keyboard-row { display: flex; gap: 3px; margin-bottom: 3px; justify-content: center; flex-wrap: wrap; }
         .key {
-            min-width: 38px;
-            height: 38px;
+            min-width: 32px;
+            height: 32px;
+            padding: 0 4px;
             display: flex;
             align-items: center;
             justify-content: center;
             background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
             border: 1px solid #bbb;
-            border-radius: 5px;
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 500;
             user-select: none;
             transition: all 0.1s;
+            flex-shrink: 0;
         }
         .key:hover { background: linear-gradient(180deg, #e9ecef 0%, #dee2e6 100%); }
         .key:active, .key.active {
@@ -722,11 +799,11 @@ header('Content-Type: text/html; charset=utf-8');
             color: white;
             border-color: #004085;
         }
-        .key-wide { min-width: 60px; }
-        .key-wider { min-width: 80px; }
-        .key-widest { min-width: 100px; }
-        .key-space { min-width: 250px; }
-        .key-fn { background: linear-gradient(180deg, #6c757d 0%, #545b62 100%); color: white; }
+        .key-wide { min-width: 50px; }
+        .key-wider { min-width: 65px; }
+        .key-widest { min-width: 75px; }
+        .key-space { min-width: 180px; }
+        .key-fn { background: linear-gradient(180deg, #6c757d 0%, #545b62 100%); color: white; min-width: 36px; }
         .key-mod { background: linear-gradient(180deg, #495057 0%, #343a40 100%); color: white; }
 
         .modifier-row { margin-bottom: 10px; }
@@ -751,6 +828,15 @@ header('Content-Type: text/html; charset=utf-8');
         }
         .file-item:last-child { border-bottom: none; }
         .file-info { display: flex; gap: 15px; font-size: 13px; color: #666; }
+
+        .radio-group { display: flex; gap: 20px; margin-top: 4px; }
+        .radio-label {
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+            font-weight: normal;
+        }
+        .radio-label input { margin-right: 6px; }
 
         .script-controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
         .script-controls select { max-width: 200px; }
@@ -1011,24 +1097,51 @@ header('Content-Type: text/html; charset=utf-8');
             <button onclick="refreshNetwork()" class="btn-secondary btn-sm" style="margin-top: 10px;">Refresh Network</button>
         </div>
 
-        <!-- USB Storage -->
+        <!-- File Upload -->
         <div class="card">
-            <h3>USB Mass Storage</h3>
+            <h3>File Upload</h3>
 
             <div class="form-group">
-                <label>Upload File to USB Storage:</label>
+                <label>Upload Destination:</label>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="uploadDest" value="usb" checked> USB Mass Storage
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="uploadDest" value="webserver"> Webserver Directory
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Select File:</label>
                 <div style="display: flex; gap: 8px;">
                     <input type="file" id="uploadFile">
                     <button onclick="uploadFile()">Upload</button>
                 </div>
             </div>
 
-            <div style="margin-top: 12px;">
+            <div class="tabs" style="margin-top: 16px;">
+                <div class="tab active" data-tab="usb-files">USB Storage</div>
+                <div class="tab" data-tab="web-files">Webserver</div>
+            </div>
+
+            <div class="tab-content active" id="tab-usb-files">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                     <strong>Files on USB Storage:</strong>
                     <button onclick="refreshUSBFiles()" class="btn-secondary btn-sm">Refresh</button>
                 </div>
                 <div class="file-list" id="usbFileList">
+                    <div class="file-item">Loading...</div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-web-files">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <strong>Files on Webserver:</strong>
+                    <button onclick="refreshWebserverFiles()" class="btn-secondary btn-sm">Refresh</button>
+                </div>
+                <div class="file-list" id="webFileList">
                     <div class="file-item">Loading...</div>
                 </div>
             </div>
@@ -1321,12 +1434,56 @@ async function uploadFile() {
         return;
     }
 
-    log('usbLog', 'Uploading: ' + file.name);
-    const result = await api('upload_file', { file });
+    const destination = document.querySelector('input[name="uploadDest"]:checked').value;
+    log('usbLog', 'Uploading to ' + destination + ': ' + file.name);
+    const result = await api('upload_file', { file, destination });
     if (result.success) {
         log('usbLog', result.message, 'success');
-        refreshUSBFiles();
+        if (destination === 'usb') {
+            refreshUSBFiles();
+        } else {
+            refreshWebserverFiles();
+            // Switch to webserver tab
+            document.querySelector('.tab[data-tab="web-files"]').click();
+        }
         fileInput.value = '';
+    } else {
+        log('usbLog', 'Error: ' + result.message, 'error');
+    }
+}
+
+async function refreshWebserverFiles() {
+    const container = document.getElementById('webFileList');
+    container.innerHTML = '<div class="file-item">Loading...</div>';
+
+    const result = await api('list_webserver_files');
+    if (!result.success) {
+        container.innerHTML = `<div class="file-item"><span class="status status-error">${result.message || 'Error'}</span></div>`;
+        return;
+    }
+
+    if (!result.files || result.files.length === 0) {
+        container.innerHTML = '<div class="file-item">No files found</div>';
+        return;
+    }
+
+    container.innerHTML = result.files.map(f => `
+        <div class="file-item">
+            <span class="mono">&#128196; ${f.name}</span>
+            <div class="file-info">
+                <span>${formatSize(f.size)}</span>
+                <button class="btn-danger btn-sm" onclick="deleteWebserverFile('${f.name}')">Delete</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function deleteWebserverFile(filename) {
+    if (!confirm('Delete file: ' + filename + '?')) return;
+    const result = await api('delete_webserver_file', { filename });
+    if (result.success) {
+        log('usbLog', 'Deleted: ' + filename, 'success');
+        refreshWebserverFiles();
     } else {
         log('usbLog', 'Error: ' + result.message, 'error');
     }
@@ -1347,6 +1504,7 @@ async function deleteUSBFile(filename) {
 document.addEventListener('DOMContentLoaded', () => {
     refreshNetwork();
     refreshUSBFiles();
+    refreshWebserverFiles();
 });
 </script>
 </body>
