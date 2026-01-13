@@ -602,6 +602,16 @@ SERVICEEOF
     log_success "Created and enabled picycle.service"
     echo -e "  ${GREEN}✓${NC} Service enabled"
 
+    # Create udev rule for persistent HID device permissions
+    log_step "Creating udev rule for HID device permissions..."
+    cat > /etc/udev/rules.d/99-picycle-hid.rules << 'UDEVEOF'
+# PiCycle: Set permissions on HID gadget device
+# This ensures /dev/hidg0 is always accessible for HID scripts
+KERNEL=="hidg[0-9]*", MODE="0666", GROUP="plugdev"
+UDEVEOF
+    udevadm control --reload-rules 2>/dev/null || true
+    log_success "udev rule created for /dev/hidg0 permissions"
+
     # Configure network
     log_step "[STEP 8/9] Configuring USB network and DHCP"
     echo -e "\n${YELLOW}[8/9] Configuring USB network and DHCP...${NC}"
@@ -1101,12 +1111,14 @@ WLANAPEOF
         systemctl enable hostapd 2>/dev/null || true
         log_step "hostapd service unmasked and enabled"
 
-        # Create a boot script to ensure hostapd starts cleanly
+        # Create pre-start script to ensure hostapd starts cleanly
         log_step "Creating hostapd pre-start script..."
         cat > /usr/bin/picycle_ap_prestart.sh << 'PRESTARTEOF'
 #!/bin/bash
 # PiCycle: Ensure wlan0 is ready for hostapd
-# This runs before hostapd starts
+# This runs BEFORE hostapd starts
+
+echo "[PiCycle AP] Pre-start: preparing wlan0..."
 
 # Kill any rogue wpa_supplicant
 pkill -9 wpa_supplicant 2>/dev/null || true
@@ -1118,18 +1130,66 @@ sleep 1
 # Unblock WiFi
 rfkill unblock wifi 2>/dev/null || true
 
-echo "PiCycle AP pre-start complete"
+echo "[PiCycle AP] Pre-start complete"
 PRESTARTEOF
         chmod +x /usr/bin/picycle_ap_prestart.sh
 
-        # Create systemd override for hostapd to run pre-start script
+        # Create post-start script to configure IP and start DHCP
+        log_step "Creating hostapd post-start script..."
+        cat > /usr/bin/picycle_ap_poststart.sh << 'POSTSTARTEOF'
+#!/bin/bash
+# PiCycle: Configure wlan0 IP and start DHCP server
+# This runs AFTER hostapd starts successfully
+
+echo "[PiCycle AP] Post-start: configuring network..."
+
+# Wait for hostapd to fully initialize wlan0
+sleep 2
+
+# Assign static IP to wlan0 (dhcpcd may not work with hostapd-managed interface)
+echo "[PiCycle AP] Assigning IP 192.168.4.1 to wlan0..."
+ip addr flush dev wlan0 2>/dev/null || true
+ip addr add 192.168.4.1/24 dev wlan0 2>/dev/null || true
+ip link set wlan0 up 2>/dev/null || true
+
+# Verify IP was assigned
+if ip addr show wlan0 | grep -q "192.168.4.1"; then
+    echo "[PiCycle AP] wlan0 IP configured: 192.168.4.1/24"
+else
+    echo "[PiCycle AP] WARNING: Failed to assign IP to wlan0"
+fi
+
+# Kill any existing dnsmasq on wlan0
+pkill -f "dnsmasq.*wlan0" 2>/dev/null || true
+sleep 1
+
+# Start dnsmasq DHCP server for WiFi AP
+echo "[PiCycle AP] Starting DHCP server on wlan0..."
+if [ -f /etc/dnsmasq.d/wlan0-ap.conf ]; then
+    /usr/sbin/dnsmasq --conf-file=/etc/dnsmasq.d/wlan0-ap.conf --pid-file=/run/dnsmasq.wlan0.pid &
+    sleep 1
+    if pgrep -f "dnsmasq.*wlan0" > /dev/null; then
+        echo "[PiCycle AP] DHCP server started successfully on wlan0"
+    else
+        echo "[PiCycle AP] WARNING: DHCP server may not have started"
+    fi
+else
+    echo "[PiCycle AP] ERROR: /etc/dnsmasq.d/wlan0-ap.conf not found"
+fi
+
+echo "[PiCycle AP] Post-start complete"
+POSTSTARTEOF
+        chmod +x /usr/bin/picycle_ap_poststart.sh
+
+        # Create systemd override for hostapd with pre and post scripts
         mkdir -p /etc/systemd/system/hostapd.service.d
         cat > /etc/systemd/system/hostapd.service.d/picycle.conf << 'OVERRIDEEOF'
 [Service]
 ExecStartPre=/usr/bin/picycle_ap_prestart.sh
+ExecStartPost=/usr/bin/picycle_ap_poststart.sh
 OVERRIDEEOF
         systemctl daemon-reload
-        log_success "hostapd pre-start script installed"
+        log_success "hostapd pre-start and post-start scripts installed"
 
         # Verify hostapd is enabled
         if systemctl is-enabled hostapd 2>/dev/null | grep -q enabled; then
