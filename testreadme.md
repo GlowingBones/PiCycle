@@ -65,15 +65,19 @@ sudo bash ./install.sh
 
 ## Connect
 
+### Option A: USB network
+
 Using the USB dongle expansion board, plug the PiCycle device directly into your computer's USB port.
 
 Open:
 
 - http://10.55.0.1/
 
-### WiFi Management
+### Option B: WiFi
 
-WiFi is configured when flashing the OS image. You can scan and connect to new WiFi networks from the web interface.
+Connect to the Pi remotely using the IP address assigned by your network.
+
+WiFi is configured when flashing the OS image. You can change networks from the web interface.
 
 ## Troubleshooting
 
