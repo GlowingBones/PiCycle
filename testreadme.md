@@ -30,7 +30,9 @@ PiCycle configures a Raspberry Pi Zero 2 W to present multiple USB functions con
 ### Web Interface
 
 <p align="center">
-  <img src="assets/images/ScreenPic1.png" alt="PiCycle Web Interface" width="600">
+  <a href="assets/images/ScreenPic1.png">
+    <img src="assets/images/ScreenPic1.png" alt="PiCycle Web Interface" width="600">
+  </a>
 </p>
 
 ## Hardware
