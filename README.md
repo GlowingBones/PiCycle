@@ -53,8 +53,7 @@ cd PiCycle
 sudo bash ./install.sh
 ```
 
-4. When prompted, enter and confirm the PiCycle WiFi access point password.
-5. When prompted to reboot, select **Yes**.
+4. When prompted to reboot, select **Yes**.
 
 ## Connect
 
