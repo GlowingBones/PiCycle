@@ -69,9 +69,7 @@ sudo bash ./install.sh
 
 Using the USB dongle expansion board, plug the PiCycle device directly into your computer's USB port.
 
-Open:
-
-- http://10.55.0.1/
+Open:  http://10.55.0.1/
 
 ### Option B: WiFi
 
