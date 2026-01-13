@@ -1105,30 +1105,67 @@ header('Content-Type: text/html; charset=utf-8');
         .keyboard-mobile { display: none; }
 
         @media (max-width: 768px) {
-            body { padding: 10px; }
-            .grid { grid-template-columns: 1fr; }
+            body { padding: 8px; }
+
+            /* Force single column full-width layout */
+            .container { max-width: 100%; padding: 0; }
+            .grid {
+                display: block !important;
+            }
+            .card {
+                width: 100%;
+                margin-bottom: 12px;
+                padding: 12px;
+                overflow-x: auto;
+            }
+
             .header { flex-direction: column; text-align: center; gap: 10px; }
             .header img { max-width: 100px; }
+
+            /* Handle wide content overflow */
+            table {
+                font-size: 12px;
+                display: block;
+                overflow-x: auto;
+            }
+            .mono {
+                font-size: 11px;
+                word-break: break-all;
+            }
+            td, th { padding: 4px 6px; }
+
+            /* Compact buttons on mobile */
+            button, .btn { padding: 6px 12px; font-size: 13px; }
+            .btn-sm { padding: 4px 8px; font-size: 11px; }
 
             /* Hide desktop keyboard on mobile */
             .keyboard-desktop { display: none; }
             .keyboard-mobile { display: block; }
 
             /* Mobile keyboard styles */
-            .mobile-keyboard { margin-top: 10px; }
-            .mobile-key-row { display: flex; gap: 4px; margin-bottom: 4px; justify-content: center; }
+            .keyboard-container.keyboard-mobile {
+                width: 100%;
+                overflow: visible;
+            }
+            .mobile-key-row {
+                display: flex;
+                gap: 3px;
+                margin-bottom: 3px;
+                justify-content: center;
+                width: 100%;
+            }
             .mobile-key {
                 flex: 1;
-                max-width: 42px;
-                height: 48px;
+                min-width: 0;
+                height: 44px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
                 border: 1px solid #bbb;
-                border-radius: 6px;
+                border-radius: 5px;
                 cursor: pointer;
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 500;
                 user-select: none;
                 transition: all 0.1s;
@@ -1143,13 +1180,13 @@ header('Content-Type: text/html; charset=utf-8');
                 background: linear-gradient(180deg, #007bff 0%, #0056b3 100%);
                 color: white;
             }
-            .mobile-key-wide { max-width: 60px; flex: 1.4; font-size: 12px; }
-            .mobile-key-wider { max-width: 75px; flex: 1.7; font-size: 12px; }
-            .mobile-key-space { max-width: none; flex: 4; }
+            .mobile-key-wide { flex: 1.5; font-size: 11px; }
+            .mobile-key-wider { flex: 1.8; font-size: 11px; }
+            .mobile-key-space { flex: 5; }
             .mobile-key-special {
                 background: linear-gradient(180deg, #495057 0%, #343a40 100%);
                 color: white;
-                font-size: 12px;
+                font-size: 11px;
             }
             .mobile-key-action {
                 background: linear-gradient(180deg, #28a745 0%, #1e7e34 100%);
@@ -1158,17 +1195,17 @@ header('Content-Type: text/html; charset=utf-8');
 
             .mobile-layer-tabs {
                 display: flex;
-                gap: 6px;
-                margin-bottom: 10px;
+                gap: 4px;
+                margin-bottom: 8px;
                 justify-content: center;
             }
             .mobile-layer-tab {
-                padding: 8px 16px;
+                padding: 8px 12px;
                 background: #e9ecef;
                 border: 1px solid #bbb;
                 border-radius: 6px;
                 cursor: pointer;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 500;
             }
             .mobile-layer-tab.active {
@@ -1182,23 +1219,35 @@ header('Content-Type: text/html; charset=utf-8');
             /* Quick actions for mobile */
             .mobile-quick-actions {
                 display: flex;
-                gap: 6px;
-                margin-bottom: 10px;
+                gap: 4px;
+                margin-bottom: 8px;
                 flex-wrap: wrap;
                 justify-content: center;
             }
             .mobile-quick-btn {
-                padding: 10px 14px;
+                padding: 8px 10px;
                 background: #6c757d;
                 color: white;
                 border: none;
-                border-radius: 6px;
-                font-size: 12px;
+                border-radius: 5px;
+                font-size: 11px;
                 cursor: pointer;
             }
             .mobile-quick-btn:active {
                 background: #495057;
             }
+
+            /* Compact other sections on mobile */
+            .text-input-group { flex-direction: column; }
+            .text-input-group input { margin-bottom: 6px; }
+            .modifier-row { font-size: 12px; }
+            .modifier-row label { margin-right: 10px; }
+            .script-controls { gap: 4px; }
+            .script-controls select { max-width: 100%; }
+            .log { font-size: 10px; max-height: 100px; }
+            .file-list { max-height: 150px; }
+            .file-item { font-size: 12px; }
+            textarea { min-height: 120px; font-size: 12px; }
         }
     </style>
 </head>
