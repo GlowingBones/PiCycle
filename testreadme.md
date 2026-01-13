@@ -73,7 +73,7 @@ Open:
 
 ### WiFi Management
 
-WiFi remains in client mode (keeps your existing network). You can scan and connect to WiFi networks (home WiFi, phone hotspot, etc.) from the web interface.
+WiFi is configured when flashing the OS image. You can scan and connect to new WiFi networks from the web interface.
 
 ## Troubleshooting
 
