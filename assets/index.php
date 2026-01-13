@@ -1100,10 +1100,105 @@ header('Content-Type: text/html; charset=utf-8');
         .tab-content { display: none; }
         .tab-content.active { display: block; }
 
+        /* Desktop keyboard visibility */
+        .keyboard-desktop { display: block; }
+        .keyboard-mobile { display: none; }
+
         @media (max-width: 768px) {
-            .keyboard-row { flex-wrap: wrap; }
-            .key { min-width: 32px; height: 32px; font-size: 10px; }
-            .key-space { min-width: 150px; }
+            body { padding: 10px; }
+            .grid { grid-template-columns: 1fr; }
+            .header { flex-direction: column; text-align: center; gap: 10px; }
+            .header img { max-width: 100px; }
+
+            /* Hide desktop keyboard on mobile */
+            .keyboard-desktop { display: none; }
+            .keyboard-mobile { display: block; }
+
+            /* Mobile keyboard styles */
+            .mobile-keyboard { margin-top: 10px; }
+            .mobile-key-row { display: flex; gap: 4px; margin-bottom: 4px; justify-content: center; }
+            .mobile-key {
+                flex: 1;
+                max-width: 42px;
+                height: 48px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 16px;
+                font-weight: 500;
+                user-select: none;
+                transition: all 0.1s;
+                -webkit-tap-highlight-color: transparent;
+            }
+            .mobile-key:active {
+                background: linear-gradient(180deg, #007bff 0%, #0056b3 100%);
+                color: white;
+                transform: scale(0.95);
+            }
+            .mobile-key.active {
+                background: linear-gradient(180deg, #007bff 0%, #0056b3 100%);
+                color: white;
+            }
+            .mobile-key-wide { max-width: 60px; flex: 1.4; font-size: 12px; }
+            .mobile-key-wider { max-width: 75px; flex: 1.7; font-size: 12px; }
+            .mobile-key-space { max-width: none; flex: 4; }
+            .mobile-key-special {
+                background: linear-gradient(180deg, #495057 0%, #343a40 100%);
+                color: white;
+                font-size: 12px;
+            }
+            .mobile-key-action {
+                background: linear-gradient(180deg, #28a745 0%, #1e7e34 100%);
+                color: white;
+            }
+
+            .mobile-layer-tabs {
+                display: flex;
+                gap: 6px;
+                margin-bottom: 10px;
+                justify-content: center;
+            }
+            .mobile-layer-tab {
+                padding: 8px 16px;
+                background: #e9ecef;
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 500;
+            }
+            .mobile-layer-tab.active {
+                background: #007bff;
+                color: white;
+                border-color: #0056b3;
+            }
+            .mobile-layer { display: none; }
+            .mobile-layer.active { display: block; }
+
+            /* Quick actions for mobile */
+            .mobile-quick-actions {
+                display: flex;
+                gap: 6px;
+                margin-bottom: 10px;
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            .mobile-quick-btn {
+                padding: 10px 14px;
+                background: #6c757d;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .mobile-quick-btn:active {
+                background: #495057;
+            }
         }
     </style>
 </head>
@@ -1143,7 +1238,8 @@ header('Content-Type: text/html; charset=utf-8');
                 <label><input type="checkbox" id="mod-gui"> Win/Cmd</label>
             </div>
 
-            <div class="keyboard-container">
+            <!-- Desktop Keyboard -->
+            <div class="keyboard-container keyboard-desktop">
                 <!-- Function keys -->
                 <div class="keyboard-row">
                     <div class="key key-fn" data-key="esc">Esc</div>
@@ -1262,6 +1358,184 @@ header('Content-Type: text/html; charset=utf-8');
                     <div class="key" data-key="left">&#9664;</div>
                     <div class="key" data-key="down">&#9660;</div>
                     <div class="key" data-key="right">&#9654;</div>
+                </div>
+            </div>
+
+            <!-- Mobile Keyboard -->
+            <div class="keyboard-container keyboard-mobile">
+                <!-- Quick action buttons -->
+                <div class="mobile-quick-actions">
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('ctrl', 'c')">Ctrl+C</button>
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('ctrl', 'v')">Ctrl+V</button>
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('ctrl', 'z')">Ctrl+Z</button>
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('ctrl', 'a')">Ctrl+A</button>
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('alt', 'tab')">Alt+Tab</button>
+                    <button class="mobile-quick-btn" onclick="sendMobileCombo('gui', 'r')">Win+R</button>
+                </div>
+
+                <!-- Layer tabs -->
+                <div class="mobile-layer-tabs">
+                    <div class="mobile-layer-tab active" data-layer="abc">ABC</div>
+                    <div class="mobile-layer-tab" data-layer="num">123</div>
+                    <div class="mobile-layer-tab" data-layer="fn">Fn</div>
+                    <div class="mobile-layer-tab" data-layer="nav">Nav</div>
+                </div>
+
+                <!-- ABC Layer (Letters) -->
+                <div class="mobile-layer active" id="layer-abc">
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="q">Q</div>
+                        <div class="mobile-key" data-key="w">W</div>
+                        <div class="mobile-key" data-key="e">E</div>
+                        <div class="mobile-key" data-key="r">R</div>
+                        <div class="mobile-key" data-key="t">T</div>
+                        <div class="mobile-key" data-key="y">Y</div>
+                        <div class="mobile-key" data-key="u">U</div>
+                        <div class="mobile-key" data-key="i">I</div>
+                        <div class="mobile-key" data-key="o">O</div>
+                        <div class="mobile-key" data-key="p">P</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="a">A</div>
+                        <div class="mobile-key" data-key="s">S</div>
+                        <div class="mobile-key" data-key="d">D</div>
+                        <div class="mobile-key" data-key="f">F</div>
+                        <div class="mobile-key" data-key="g">G</div>
+                        <div class="mobile-key" data-key="h">H</div>
+                        <div class="mobile-key" data-key="j">J</div>
+                        <div class="mobile-key" data-key="k">K</div>
+                        <div class="mobile-key" data-key="l">L</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="shift" id="mobile-shift">Shift</div>
+                        <div class="mobile-key" data-key="z">Z</div>
+                        <div class="mobile-key" data-key="x">X</div>
+                        <div class="mobile-key" data-key="c">C</div>
+                        <div class="mobile-key" data-key="v">V</div>
+                        <div class="mobile-key" data-key="b">B</div>
+                        <div class="mobile-key" data-key="n">N</div>
+                        <div class="mobile-key" data-key="m">M</div>
+                        <div class="mobile-key mobile-key-wide" data-key="backspace">&#9003;</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="ctrl" id="mobile-ctrl">Ctrl</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="alt" id="mobile-alt">Alt</div>
+                        <div class="mobile-key mobile-key-space" data-key="space">Space</div>
+                        <div class="mobile-key" data-key=".">.</div>
+                        <div class="mobile-key mobile-key-wider mobile-key-action" data-key="enter">Enter</div>
+                    </div>
+                </div>
+
+                <!-- Numbers/Symbols Layer -->
+                <div class="mobile-layer" id="layer-num">
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="1">1</div>
+                        <div class="mobile-key" data-key="2">2</div>
+                        <div class="mobile-key" data-key="3">3</div>
+                        <div class="mobile-key" data-key="4">4</div>
+                        <div class="mobile-key" data-key="5">5</div>
+                        <div class="mobile-key" data-key="6">6</div>
+                        <div class="mobile-key" data-key="7">7</div>
+                        <div class="mobile-key" data-key="8">8</div>
+                        <div class="mobile-key" data-key="9">9</div>
+                        <div class="mobile-key" data-key="0">0</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="-">-</div>
+                        <div class="mobile-key" data-key="/">/</div>
+                        <div class="mobile-key" data-key=":">:</div>
+                        <div class="mobile-key" data-key=";">;</div>
+                        <div class="mobile-key" data-key="(">(</div>
+                        <div class="mobile-key" data-key=")">)</div>
+                        <div class="mobile-key" data-key="$">$</div>
+                        <div class="mobile-key" data-key="&">&</div>
+                        <div class="mobile-key" data-key="@">@</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" onclick="switchMobileSymbols()">#+=</div>
+                        <div class="mobile-key" data-key=".">.</div>
+                        <div class="mobile-key" data-key=",">,</div>
+                        <div class="mobile-key" data-key="?">?</div>
+                        <div class="mobile-key" data-key="!">!</div>
+                        <div class="mobile-key" data-key="'">'</div>
+                        <div class="mobile-key" data-key='"'>"</div>
+                        <div class="mobile-key mobile-key-wide" data-key="backspace">&#9003;</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="ctrl" id="mobile-ctrl-num">Ctrl</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="alt" id="mobile-alt-num">Alt</div>
+                        <div class="mobile-key mobile-key-space" data-key="space">Space</div>
+                        <div class="mobile-key" data-key=".">.</div>
+                        <div class="mobile-key mobile-key-wider mobile-key-action" data-key="enter">Enter</div>
+                    </div>
+                </div>
+
+                <!-- Function Keys Layer -->
+                <div class="mobile-layer" id="layer-fn">
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="esc">Esc</div>
+                        <div class="mobile-key" data-key="f1">F1</div>
+                        <div class="mobile-key" data-key="f2">F2</div>
+                        <div class="mobile-key" data-key="f3">F3</div>
+                        <div class="mobile-key" data-key="f4">F4</div>
+                        <div class="mobile-key" data-key="f5">F5</div>
+                        <div class="mobile-key" data-key="f6">F6</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="f7">F7</div>
+                        <div class="mobile-key" data-key="f8">F8</div>
+                        <div class="mobile-key" data-key="f9">F9</div>
+                        <div class="mobile-key" data-key="f10">F10</div>
+                        <div class="mobile-key" data-key="f11">F11</div>
+                        <div class="mobile-key" data-key="f12">F12</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="print">PrtSc</div>
+                        <div class="mobile-key" data-key="scroll">ScrLk</div>
+                        <div class="mobile-key" data-key="pause">Pause</div>
+                        <div class="mobile-key" data-key="tab">Tab</div>
+                        <div class="mobile-key" data-key="caps">Caps</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="ctrl">Ctrl</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="shift">Shift</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="alt">Alt</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="gui">Win</div>
+                        <div class="mobile-key mobile-key-wide" data-key="backspace">&#9003;</div>
+                    </div>
+                </div>
+
+                <!-- Navigation Layer -->
+                <div class="mobile-layer" id="layer-nav">
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="insert">Ins</div>
+                        <div class="mobile-key" data-key="home">Home</div>
+                        <div class="mobile-key" data-key="pageup">PgUp</div>
+                        <div class="mobile-key" data-key="up">&#9650;</div>
+                        <div class="mobile-key" data-key="pagedown">PgDn</div>
+                        <div class="mobile-key" data-key="end">End</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="delete">Del</div>
+                        <div class="mobile-key"></div>
+                        <div class="mobile-key" data-key="left">&#9664;</div>
+                        <div class="mobile-key" data-key="down">&#9660;</div>
+                        <div class="mobile-key" data-key="right">&#9654;</div>
+                        <div class="mobile-key"></div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key" data-key="tab">Tab</div>
+                        <div class="mobile-key" data-key="backspace">Bksp</div>
+                        <div class="mobile-key mobile-key-action" data-key="enter">Enter</div>
+                        <div class="mobile-key" data-key="esc">Esc</div>
+                        <div class="mobile-key" data-key="space">Space</div>
+                    </div>
+                    <div class="mobile-key-row">
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="ctrl">Ctrl</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="shift">Shift</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="alt">Alt</div>
+                        <div class="mobile-key mobile-key-wide mobile-key-special" data-mobile-modifier="gui">Win</div>
+                    </div>
                 </div>
             </div>
 
@@ -1512,6 +1786,95 @@ document.querySelectorAll('.tab').forEach(tab => {
         document.getElementById('tab-' + tabName).classList.add('active');
     });
 });
+
+// Mobile keyboard layer switching
+document.querySelectorAll('.mobile-layer-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        const layerName = tab.dataset.layer;
+        document.querySelectorAll('.mobile-layer-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.mobile-layer').forEach(l => l.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('layer-' + layerName).classList.add('active');
+    });
+});
+
+// Mobile keyboard modifier state
+let mobileModifiers = { ctrl: false, shift: false, alt: false, gui: false };
+
+// Mobile modifier key toggle
+document.querySelectorAll('.mobile-key[data-mobile-modifier]').forEach(key => {
+    key.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const mod = key.dataset.mobileModifier;
+        mobileModifiers[mod] = !mobileModifiers[mod];
+
+        // Toggle active class on all modifier keys of this type
+        document.querySelectorAll(`.mobile-key[data-mobile-modifier="${mod}"]`).forEach(k => {
+            k.classList.toggle('active', mobileModifiers[mod]);
+        });
+
+        // Also sync with desktop checkboxes
+        const checkbox = document.getElementById('mod-' + mod);
+        if (checkbox) checkbox.checked = mobileModifiers[mod];
+    });
+});
+
+// Mobile key press handler
+document.querySelectorAll('.mobile-key[data-key]').forEach(key => {
+    key.addEventListener('click', () => {
+        const keyValue = key.dataset.key;
+        if (keyValue) {
+            sendMobileKey(keyValue);
+        }
+    });
+});
+
+// Get mobile modifiers as number
+function getMobileModifiers() {
+    let mod = 0;
+    if (mobileModifiers.ctrl) mod |= 0x01;
+    if (mobileModifiers.shift) mod |= 0x02;
+    if (mobileModifiers.alt) mod |= 0x04;
+    if (mobileModifiers.gui) mod |= 0x08;
+    return mod;
+}
+
+// Send key from mobile keyboard
+async function sendMobileKey(key) {
+    const modifier = getMobileModifiers();
+    const result = await api('send_key', { key, modifier });
+    log('keyboardLog', result.success ? `Sent: ${key}` : `Error: ${result.message}`, result.success ? 'success' : 'error');
+
+    // Clear modifiers after sending (like phone keyboard behavior)
+    if (modifier !== 0) {
+        clearMobileModifiers();
+    }
+}
+
+// Send combo from mobile quick buttons
+async function sendMobileCombo(mod, key) {
+    const keys = mod + ' ' + key;
+    const result = await api('send_combo', { keys });
+    log('keyboardLog', result.success ? `Combo: ${mod}+${key}` : `Error: ${result.message}`, result.success ? 'success' : 'error');
+}
+
+// Clear all mobile modifiers
+function clearMobileModifiers() {
+    mobileModifiers = { ctrl: false, shift: false, alt: false, gui: false };
+    document.querySelectorAll('.mobile-key[data-mobile-modifier]').forEach(k => {
+        k.classList.remove('active');
+    });
+    // Also clear desktop checkboxes
+    ['ctrl', 'shift', 'alt', 'gui'].forEach(mod => {
+        const checkbox = document.getElementById('mod-' + mod);
+        if (checkbox) checkbox.checked = false;
+    });
+}
+
+// Placeholder for symbol switching (can be expanded later)
+function switchMobileSymbols() {
+    log('keyboardLog', 'Symbol layer: use 123 tab for numbers and symbols');
+}
 
 // DuckyScript functions
 async function runSelectedScript() {
