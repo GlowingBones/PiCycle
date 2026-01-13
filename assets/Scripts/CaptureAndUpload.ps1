@@ -1,77 +1,107 @@
-param (
-    [int]$IntervalSeconds = 60
+param(
+  [string]$OutputDir = "C:\Temp",
+  [int]$IntervalSeconds = 60
 )
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
-# For WIA (webcam)
-$wiaManager = New-Object -ComObject WIA.DeviceManager
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+Add-Type -AssemblyName System.Runtime.InteropServices.WindowsRuntime
 
-function Capture-Screenshot {
-    param ([string]$FilePath)
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-    $graphics.CopyFromScreen($bounds.Location, (New-Object System.Drawing.Point(0,0)), $bounds.Size)
-    $bitmap.Save($FilePath, [System.Drawing.Imaging.ImageFormat]::Png)
+if ([Threading.Thread]::CurrentThread.ApartmentState -ne "STA") {
+  throw "This script must be run in STA. Use: powershell.exe -STA -File $PSCommandPath"
+}
+
+if (-not (Test-Path -LiteralPath $OutputDir)) {
+  New-Item -ItemType Directory -Path $OutputDir | Out-Null
+}
+
+function Get-WinRTType {
+  param([Parameter(Mandatory)][string]$FullName)
+  $t = [Type]::GetType("$FullName, Windows, ContentType=WindowsRuntime")
+  if (-not $t) { throw "WinRT type not found: $FullName" }
+  $t
+}
+
+function Await-WinRT {
+  param([Parameter(Mandatory)]$Async)
+  $ct = [Threading.CancellationToken]::None
+  $task = [System.WindowsRuntimeSystemExtensions]::AsTask($Async, $ct)
+  $task.GetAwaiter().GetResult()
+}
+
+function Capture-AllScreens {
+  param(
+    [Parameter(Mandatory)][string]$Dir,
+    [Parameter(Mandatory)][string]$Timestamp
+  )
+
+  $i = 1
+  foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
+    $b = $scr.Bounds
+    $path = Join-Path $Dir ("screenshot-$Timestamp-monitor{0}.png" -f $i)
+
+    $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+    $g   = [System.Drawing.Graphics]::FromImage($bmp)
+    try {
+      $g.CopyFromScreen($b.Location, (New-Object System.Drawing.Point 0,0), $b.Size)
+      $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+      $g.Dispose()
+      $bmp.Dispose()
+    }
+    $i++
+  }
 }
 
 function Capture-WebcamPhoto {
-    param ([string]$FilePath)
-    if ($wiaManager.DeviceInfos.Count -eq 0) {
-        Write-Error "No WIA devices found."
-        return $false
-    }
+  param(
+    [Parameter(Mandatory)][string]$Dir,
+    [Parameter(Mandatory)][string]$Timestamp
+  )
 
-    # Select the first camera device (adjust index if multiple)
-    $device = $wiaManager.DeviceInfos[1].Connect()
-    $takePictureCmd = "{AF933CAC-ACAD-11D2-A093-00C04F72DC3C}"  # WIA Take Picture command ID
+  $MediaCaptureT = Get-WinRTType "Windows.Media.Capture.MediaCapture"
+  $InitSettingsT = Get-WinRTType "Windows.Media.Capture.MediaCaptureInitializationSettings"
+  $ModeEnumT     = Get-WinRTType "Windows.Media.Capture.StreamingCaptureMode"
+  $EncPropsT     = Get-WinRTType "Windows.Media.MediaProperties.ImageEncodingProperties"
+  $StorageFolderT= Get-WinRTType "Windows.Storage.StorageFolder"
+  $CollisionEnumT= Get-WinRTType "Windows.Storage.CreationCollisionOption"
 
-    # Check if command is supported
-    $supportsCmd = $false
-    foreach ($cmd in $device.Commands) {
-        if ($cmd.CommandID -eq $takePictureCmd) {
-            $supportsCmd = $true
-            break
-        }
-    }
-    if (-not $supportsCmd) {
-        Write-Error "Webcam does not support Take Picture command."
-        return $false
-    }
+  $cap = $null
+  try {
+    $cap = [Activator]::CreateInstance($MediaCaptureT)
 
-    # Take picture
-    $device.ExecuteCommand($takePictureCmd)
-    Start-Sleep -Milliseconds 500  # Wait for image to be ready
+    $settings = [Activator]::CreateInstance($InitSettingsT)
+    $settings.StreamingCaptureMode = [Enum]::Parse($ModeEnumT, "Video")
 
-    # Get the latest item and transfer
-    $newItem = $device.Items[$device.Items.Count]
-    $image = $newItem.Transfer()
-    $image.SaveFile($FilePath)
-    return $true
-}
+    Await-WinRT ($cap.InitializeAsync($settings))
 
-function Upload-File {
-    param ([string]$Url, [string]$FilePath)
-    $form = @{ file = Get-Item $FilePath }
-    Invoke-WebRequest -Uri $Url -Method Post -Body $form
+    $folder = Await-WinRT ($StorageFolderT.GetFolderFromPathAsync($Dir))
+    $name = "photo-$Timestamp.jpg"
+    $file = Await-WinRT ($folder.CreateFileAsync($name, [Enum]::Parse($CollisionEnumT, "ReplaceExisting")))
+
+    $enc = $EncPropsT.CreateJpeg()
+    Await-WinRT ($cap.CapturePhotoToStorageFileAsync($enc, $file))
+  }
+  finally {
+    if ($cap) { $cap.Dispose() }
+  }
 }
 
 while ($true) {
-    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    
-    # Screenshot
-    $screenFile = "screenshot-$timestamp.png"
-    Capture-Screenshot -FilePath $screenFile
-    Upload-File -Url "http://10.55.0.1/uploads/" -FilePath $screenFile
-    Remove-Item $screenFile -Force
-    
-    # Webcam photo
-    $photoFile = "photo-$timestamp.jpg"
-    if (Capture-WebcamPhoto -FilePath $photoFile) {
-        Upload-File -Url "http://10.55.0.1/uploads/" -FilePath $photoFile
-        Remove-Item $photoFile -Force
-    }
-    
-    Start-Sleep -Seconds $IntervalSeconds
+  $ts = Get-Date -Format "yyyyMMdd-HHmmss"
+
+  Capture-AllScreens -Dir $OutputDir -Timestamp $ts
+
+  try {
+    Capture-WebcamPhoto -Dir $OutputDir -Timestamp $ts
+  } catch {
+    Write-Host ("Camera capture failed: {0}" -f $_.Exception.Message)
+  }
+
+  Start-Sleep -Seconds $IntervalSeconds
 }
