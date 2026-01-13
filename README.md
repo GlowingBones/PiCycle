@@ -16,7 +16,7 @@ Style notes:
 </p>
 
 <p align="center">
-  <strong><B>Status:</B></strong> work in progress. Expect breaking changes.
+  <strong>Status:</strong> work in progress. Expect breaking changes.
 </p>
 
 ## What it does
@@ -26,6 +26,14 @@ PiCycle configures a Raspberry Pi Zero 2 W to present multiple USB functions con
 - HID keyboard (for scripted keystrokes)
 - Mass storage (exposed over USB)
 - USB Ethernet (network emulator) with a local web interface
+
+### Web Interface
+
+<p align="center">
+  <a href="assets/images/ScreenPic1.png">
+    <img src="assets/images/ScreenPic1.png" alt="PiCycle Web Interface" width="600">
+  </a>
+</p>
 
 ## Hardware
 
@@ -57,9 +65,7 @@ sudo bash ./install.sh
 
 ## Connect
 
-PiCycle provides two ways to reach the web interface:
-
-### Option A: USB network (recommended)
+### Option A: USB network
 
 Using the USB dongle expansion board, plug the PiCycle device directly into your computer's USB port.
 
@@ -67,11 +73,23 @@ Open:
 
 - http://10.55.0.1/
 
-### Option B: WiFi access point
+### Option B: WiFi
 
-Connect to SSID `PiCycle`, then open:
+Connect to the Pi remotely using the IP address assigned by your network.
 
-- http://192.168.4.1
+WiFi is configured when flashing the OS image. You can change networks from the web interface.
+
+## Troubleshooting
+
+**Device not recognized over USB**
+- Ensure you're using the USB data port, not the power-only port
+- Try a different USB cable (some cables are charge-only)
+- On Windows, the RNDIS driver may need to install automatically; wait a moment
+
+**Can't reach the web interface**
+- Verify your computer received an IP address in the `10.55.0.x` range
+- Try disabling other network interfaces temporarily
+- Clear your browser cache or try incognito mode
 
 ## Safety and legal
 
@@ -79,4 +97,4 @@ PiCycle can generate HID keystrokes. Use only on systems you own or have explici
 
 ## License
 
-See the repository for licensing information.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
