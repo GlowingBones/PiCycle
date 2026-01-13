@@ -77,7 +77,7 @@ Open:
 
 ### Option B: WiFi access point
 
-Connect to SSID `PiCycle` (password: `picycle123`), then open:
+Connect to SSID `PiCycle`, then open:
 
 - http://192.168.4.1
 
