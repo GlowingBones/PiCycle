@@ -422,6 +422,209 @@ function getScriptFiles(): array {
     return $scripts;
 }
 
+// ============ WiFi Management Functions ============
+
+// Scan for available WiFi networks
+function scanWifiNetworks(): array {
+    $networks = [];
+
+    // Use iwlist to scan for networks
+    $output = shell_exec('sudo iwlist wlan0 scan 2>/dev/null');
+    if (!$output) {
+        // Try alternative: nmcli if available
+        $output = shell_exec('nmcli -t -f SSID,SIGNAL,SECURITY device wifi list 2>/dev/null');
+        if ($output) {
+            $lines = explode("\n", trim($output));
+            foreach ($lines as $line) {
+                if (empty($line)) continue;
+                $parts = explode(':', $line);
+                if (count($parts) >= 2 && !empty($parts[0])) {
+                    $networks[] = [
+                        'ssid' => $parts[0],
+                        'signal' => isset($parts[1]) ? intval($parts[1]) : 0,
+                        'security' => isset($parts[2]) ? $parts[2] : 'Unknown'
+                    ];
+                }
+            }
+            return $networks;
+        }
+        return ['error' => 'WiFi scan failed'];
+    }
+
+    // Parse iwlist output
+    $cells = preg_split('/Cell \d+ -/', $output);
+    foreach ($cells as $cell) {
+        if (empty(trim($cell))) continue;
+
+        $ssid = '';
+        $signal = 0;
+        $security = 'Open';
+
+        // Extract SSID
+        if (preg_match('/ESSID:"([^"]*)"/', $cell, $matches)) {
+            $ssid = $matches[1];
+        }
+
+        // Extract signal strength
+        if (preg_match('/Signal level=(-?\d+)\s*dBm/', $cell, $matches)) {
+            // Convert dBm to percentage (rough approximation)
+            $dbm = intval($matches[1]);
+            $signal = max(0, min(100, 2 * ($dbm + 100)));
+        } elseif (preg_match('/Quality=(\d+)\/(\d+)/', $cell, $matches)) {
+            $signal = intval(($matches[1] / $matches[2]) * 100);
+        }
+
+        // Check security
+        if (preg_match('/Encryption key:on/', $cell)) {
+            if (preg_match('/WPA2/', $cell)) {
+                $security = 'WPA2';
+            } elseif (preg_match('/WPA/', $cell)) {
+                $security = 'WPA';
+            } else {
+                $security = 'WEP';
+            }
+        }
+
+        if (!empty($ssid)) {
+            $networks[] = [
+                'ssid' => $ssid,
+                'signal' => $signal,
+                'security' => $security
+            ];
+        }
+    }
+
+    // Sort by signal strength
+    usort($networks, function($a, $b) {
+        return $b['signal'] - $a['signal'];
+    });
+
+    // Remove duplicates (keep strongest signal)
+    $seen = [];
+    $unique = [];
+    foreach ($networks as $net) {
+        if (!isset($seen[$net['ssid']])) {
+            $seen[$net['ssid']] = true;
+            $unique[] = $net;
+        }
+    }
+
+    return $unique;
+}
+
+// Get currently connected WiFi network
+function getCurrentWifi(): array {
+    $result = [
+        'connected' => false,
+        'ssid' => null,
+        'ip' => null
+    ];
+
+    // Get current SSID
+    $ssid = trim(shell_exec('iwgetid -r 2>/dev/null') ?? '');
+    if (!empty($ssid)) {
+        $result['connected'] = true;
+        $result['ssid'] = $ssid;
+    }
+
+    // Get IP address
+    $output = shell_exec('ip addr show wlan0 2>/dev/null');
+    if ($output && preg_match('/inet (\d+\.\d+\.\d+\.\d+)/', $output, $matches)) {
+        $result['ip'] = $matches[1];
+    }
+
+    return $result;
+}
+
+// Connect to a WiFi network
+function connectToWifi(string $ssid, string $password): array {
+    $result = ['success' => false, 'message' => ''];
+
+    if (empty($ssid)) {
+        $result['message'] = 'SSID cannot be empty';
+        return $result;
+    }
+
+    // Escape special characters for wpa_passphrase
+    $ssidEscaped = escapeshellarg($ssid);
+    $passwordEscaped = escapeshellarg($password);
+
+    // Method 1: Try using wpa_cli (most reliable)
+    $wpaConf = "/etc/wpa_supplicant/wpa_supplicant.conf";
+
+    // Backup existing config
+    shell_exec("sudo cp {$wpaConf} {$wpaConf}.bak 2>/dev/null");
+
+    // Generate network block
+    if (!empty($password)) {
+        $pskOutput = shell_exec("wpa_passphrase {$ssidEscaped} {$passwordEscaped} 2>/dev/null");
+        if ($pskOutput && preg_match('/psk=([a-f0-9]{64})/', $pskOutput, $matches)) {
+            $psk = $matches[1];
+            $networkBlock = "\nnetwork={\n    ssid=\"{$ssid}\"\n    psk={$psk}\n    key_mgmt=WPA-PSK\n}\n";
+        } else {
+            $result['message'] = 'Failed to generate PSK';
+            return $result;
+        }
+    } else {
+        // Open network
+        $networkBlock = "\nnetwork={\n    ssid=\"{$ssid}\"\n    key_mgmt=NONE\n}\n";
+    }
+
+    // Read current config
+    $currentConfig = @file_get_contents($wpaConf);
+    if ($currentConfig === false) {
+        // Create new config
+        $currentConfig = "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\nupdate_config=1\ncountry=US\n";
+    }
+
+    // Remove existing network block for this SSID (if any)
+    $currentConfig = preg_replace('/\nnetwork=\{[^}]*ssid="' . preg_quote($ssid, '/') . '"[^}]*\}\n?/', "\n", $currentConfig);
+
+    // Add new network block
+    $newConfig = trim($currentConfig) . "\n" . $networkBlock;
+
+    // Write config
+    $tempFile = '/tmp/wpa_supplicant_new.conf';
+    if (file_put_contents($tempFile, $newConfig) === false) {
+        $result['message'] = 'Failed to write config';
+        return $result;
+    }
+
+    // Apply new config
+    shell_exec("sudo cp {$tempFile} {$wpaConf}");
+    shell_exec("sudo chmod 600 {$wpaConf}");
+
+    // Reconfigure wpa_supplicant
+    shell_exec("sudo wpa_cli -i wlan0 reconfigure 2>/dev/null");
+
+    // Wait for connection (up to 15 seconds)
+    for ($i = 0; $i < 15; $i++) {
+        sleep(1);
+        $currentSsid = trim(shell_exec('iwgetid -r 2>/dev/null') ?? '');
+        if ($currentSsid === $ssid) {
+            $result['success'] = true;
+            $result['message'] = "Connected to {$ssid}";
+
+            // Get IP (may take a moment)
+            sleep(2);
+            $ip = getCurrentWifi()['ip'];
+            if ($ip) {
+                $result['message'] .= " (IP: {$ip})";
+            }
+            return $result;
+        }
+    }
+
+    $result['message'] = "Failed to connect to {$ssid}. Check password and try again.";
+    return $result;
+}
+
+// Disconnect from current WiFi
+function disconnectWifi(): array {
+    shell_exec('sudo wpa_cli -i wlan0 disconnect 2>/dev/null');
+    return ['success' => true, 'message' => 'Disconnected from WiFi'];
+}
+
 // Handle AJAX requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     header('Content-Type: application/json');
@@ -664,6 +867,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             }
             $response['success'] = true;
             $response['interfaces'] = $networkData;
+            break;
+
+        case 'wifi_scan':
+            $networks = scanWifiNetworks();
+            if (isset($networks['error'])) {
+                $response['message'] = $networks['error'];
+            } else {
+                $response['success'] = true;
+                $response['networks'] = $networks;
+            }
+            break;
+
+        case 'wifi_status':
+            $response['success'] = true;
+            $response['wifi'] = getCurrentWifi();
+            break;
+
+        case 'wifi_connect':
+            $ssid = $_POST['ssid'] ?? '';
+            $password = $_POST['password'] ?? '';
+            $result = connectToWifi($ssid, $password);
+            $response['success'] = $result['success'];
+            $response['message'] = $result['message'];
+            break;
+
+        case 'wifi_disconnect':
+            $result = disconnectWifi();
+            $response['success'] = $result['success'];
+            $response['message'] = $result['message'];
             break;
     }
 
@@ -1097,6 +1329,41 @@ header('Content-Type: text/html; charset=utf-8');
             <button onclick="refreshNetwork()" class="btn-secondary btn-sm" style="margin-top: 10px;">Refresh Network</button>
         </div>
 
+        <!-- WiFi Management -->
+        <div class="card">
+            <h3>WiFi Management</h3>
+            <div id="wifiStatus" style="margin-bottom: 12px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
+                <strong>Current:</strong> <span id="currentWifi">Checking...</span>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                <button onclick="scanWifi()" id="scanBtn">Scan Networks</button>
+                <button onclick="disconnectWifi()" class="btn-secondary">Disconnect</button>
+            </div>
+
+            <div id="wifiNetworks" style="max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; display: none;">
+                <!-- Networks will be populated here -->
+            </div>
+
+            <div id="wifiConnectForm" style="margin-top: 12px; padding: 12px; background: #f9f9f9; border-radius: 4px; display: none;">
+                <div style="margin-bottom: 8px;">
+                    <strong>Connect to: </strong><span id="selectedSSID"></span>
+                </div>
+                <div class="form-group" style="margin-bottom: 8px;">
+                    <label>Password:</label>
+                    <input type="password" id="wifiPassword" placeholder="Enter WiFi password" style="width: 100%;">
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button onclick="connectToSelectedWifi()">Connect</button>
+                    <button onclick="cancelWifiConnect()" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+
+            <div id="wifiLog" class="log" style="margin-top: 12px;">
+                <div class="log-entry">WiFi manager ready.</div>
+            </div>
+        </div>
+
         <!-- File Upload -->
         <div class="card">
             <h3>File Upload</h3>
@@ -1390,6 +1657,130 @@ async function refreshNetwork() {
     container.innerHTML = html || '<span class="status status-warn">No network interfaces found</span>';
 }
 
+// WiFi Management functions
+let selectedWifiSSID = '';
+
+async function refreshWifiStatus() {
+    const statusEl = document.getElementById('currentWifi');
+    const result = await api('wifi_status');
+    if (result.success && result.wifi) {
+        if (result.wifi.connected) {
+            statusEl.innerHTML = `<span class="status status-ok">${result.wifi.ssid}</span> (${result.wifi.ip || 'Getting IP...'})`;
+        } else {
+            statusEl.innerHTML = '<span class="status status-warn">Not connected</span>';
+        }
+    } else {
+        statusEl.innerHTML = '<span class="status status-error">Unknown</span>';
+    }
+}
+
+async function scanWifi() {
+    const btn = document.getElementById('scanBtn');
+    const container = document.getElementById('wifiNetworks');
+
+    btn.disabled = true;
+    btn.textContent = 'Scanning...';
+    container.style.display = 'block';
+    container.innerHTML = '<div style="padding: 12px; text-align: center;">Scanning for networks...</div>';
+    log('wifiLog', 'Scanning for WiFi networks...');
+
+    const result = await api('wifi_scan');
+
+    btn.disabled = false;
+    btn.textContent = 'Scan Networks';
+
+    if (!result.success) {
+        container.innerHTML = '<div style="padding: 12px; color: #d32f2f;">Scan failed. Try again.</div>';
+        log('wifiLog', 'Scan failed: ' + (result.message || 'Unknown error'), 'error');
+        return;
+    }
+
+    if (!result.networks || result.networks.length === 0) {
+        container.innerHTML = '<div style="padding: 12px;">No networks found</div>';
+        log('wifiLog', 'No networks found');
+        return;
+    }
+
+    container.innerHTML = result.networks.map(net => {
+        const signalBars = getSignalBars(net.signal);
+        const security = net.security !== 'Open' ? '&#128274;' : '';
+        return `
+            <div class="wifi-network" onclick="selectWifi('${escapeHtml(net.ssid)}', '${net.security}')"
+                 style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <strong>${escapeHtml(net.ssid)}</strong>
+                    <span style="font-size: 0.85em; color: #666;">${security} ${net.security}</span>
+                </div>
+                <div style="font-family: monospace;">${signalBars} ${net.signal}%</div>
+            </div>
+        `;
+    }).join('');
+
+    log('wifiLog', `Found ${result.networks.length} networks`);
+}
+
+function getSignalBars(signal) {
+    if (signal >= 75) return '&#9608;&#9608;&#9608;&#9608;';
+    if (signal >= 50) return '&#9608;&#9608;&#9608;&#9617;';
+    if (signal >= 25) return '&#9608;&#9608;&#9617;&#9617;';
+    return '&#9608;&#9617;&#9617;&#9617;';
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function selectWifi(ssid, security) {
+    selectedWifiSSID = ssid;
+    document.getElementById('selectedSSID').textContent = ssid;
+    document.getElementById('wifiConnectForm').style.display = 'block';
+    document.getElementById('wifiPassword').value = '';
+
+    // Focus password field if network requires password
+    if (security !== 'Open') {
+        document.getElementById('wifiPassword').focus();
+    }
+}
+
+function cancelWifiConnect() {
+    document.getElementById('wifiConnectForm').style.display = 'none';
+    selectedWifiSSID = '';
+}
+
+async function connectToSelectedWifi() {
+    if (!selectedWifiSSID) return;
+
+    const password = document.getElementById('wifiPassword').value;
+    log('wifiLog', `Connecting to ${selectedWifiSSID}...`);
+
+    // Disable form while connecting
+    const buttons = document.querySelectorAll('#wifiConnectForm button');
+    buttons.forEach(b => b.disabled = true);
+
+    const result = await api('wifi_connect', { ssid: selectedWifiSSID, password: password });
+
+    buttons.forEach(b => b.disabled = false);
+
+    if (result.success) {
+        log('wifiLog', result.message, 'success');
+        cancelWifiConnect();
+        refreshWifiStatus();
+        refreshNetwork();
+    } else {
+        log('wifiLog', result.message || 'Connection failed', 'error');
+    }
+}
+
+async function disconnectWifi() {
+    log('wifiLog', 'Disconnecting...');
+    const result = await api('wifi_disconnect');
+    log('wifiLog', result.message, result.success ? 'success' : 'error');
+    refreshWifiStatus();
+    refreshNetwork();
+}
+
 // USB Storage functions
 async function refreshUSBFiles() {
     const container = document.getElementById('usbFileList');
@@ -1503,6 +1894,7 @@ async function deleteUSBFile(filename) {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     refreshNetwork();
+    refreshWifiStatus();
     refreshUSBFiles();
     refreshWebserverFiles();
 });
