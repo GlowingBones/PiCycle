@@ -916,6 +916,19 @@ EOF
         echo "Started: $(date)" >> "$ap_log"
         echo "Note: This log is also captured in $INSTALL_LOG" >> "$ap_log"
 
+        # Capture current network settings BEFORE we disable WiFi
+        # This preserves gateway/DNS for future internet access
+        log_step "Capturing current network settings..."
+        local current_gateway=$(ip route | grep default | awk '{print $3}' | head -1)
+        local current_dns=$(grep -m1 "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}')
+
+        # Fallbacks if not found
+        [ -z "$current_gateway" ] && current_gateway="192.168.1.1"
+        [ -z "$current_dns" ] && current_dns="8.8.8.8"
+
+        log_step "Detected gateway: $current_gateway, DNS: $current_dns"
+        echo -e "${CYAN}Current network: Gateway=${current_gateway}, DNS=${current_dns}${NC}"
+
         # Get password from user
         local wifi_pass=""
         while true; do
@@ -934,6 +947,23 @@ EOF
             break
         done
         log_step "WiFi AP password obtained (length: ${#wifi_pass})"
+
+        # Get gateway and DNS settings for USB network
+        echo -e "\n${CYAN}${BOLD}Network Configuration for USB Network (10.55.0.1):${NC}"
+        echo -e "${GRAY}These settings allow devices connected via USB to access the internet${NC}"
+        echo -e "${GRAY}(if you connect an ethernet adapter or have another route to internet)${NC}\n"
+
+        local usb_gateway=""
+        local usb_dns=""
+
+        read -p "Gateway IP [${current_gateway}]: " usb_gateway
+        usb_gateway="${usb_gateway:-$current_gateway}"
+
+        read -p "DNS Server [${current_dns}]: " usb_dns
+        usb_dns="${usb_dns:-$current_dns}"
+
+        log_step "USB network config: Gateway=$usb_gateway, DNS=$usb_dns"
+        echo -e "${GREEN}✓ Network settings saved${NC}\n"
 
         # Install hostapd if needed
         echo -e "${YELLOW}Installing hostapd...${NC}"
@@ -1082,15 +1112,43 @@ HOSTAPDEOF
         # Create dnsmasq config for wlan0 AP
         log_step "=== CREATING DNSMASQ CONFIG FOR WLAN0 ==="
         mkdir -p /etc/dnsmasq.d
-        cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
+        cat > /etc/dnsmasq.d/wlan0-ap.conf << WLANEOF
 # PiCycle WiFi AP DHCP
 interface=wlan0
 bind-interfaces
 dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
 dhcp-option=option:router,192.168.4.1
 dhcp-option=option:dns-server,192.168.4.1
+# Upstream DNS server for forwarding queries
+server=${usb_dns}
 WLANEOF
-        log_success "wlan0-ap.conf created (DHCP: 192.168.4.10-100)"
+        log_success "wlan0-ap.conf created (DHCP: 192.168.4.10-100, upstream DNS: $usb_dns)"
+
+        # Update usb0.conf with DNS settings too
+        log_step "Updating USB network DHCP config with DNS..."
+        cat > /etc/dnsmasq.d/usb0.conf << USBEOF
+# PiCycle USB Network DHCP
+interface=usb0
+bind-interfaces
+dhcp-range=10.55.0.10,10.55.0.100,255.255.255.0,12h
+dhcp-option=option:router,10.55.0.1
+dhcp-option=option:dns-server,10.55.0.1
+dhcp-leasefile=/var/lib/misc/dnsmasq.usb0.leases
+log-dhcp
+# Upstream DNS server for forwarding queries
+server=${usb_dns}
+USBEOF
+        log_success "usb0.conf updated with upstream DNS: $usb_dns"
+
+        # Save network settings for reference and future use
+        log_step "Saving network configuration..."
+        cat > /etc/picycle/network.conf << NETCONFEOF
+# PiCycle Network Configuration
+# Generated: $(date)
+USB_GATEWAY=${usb_gateway}
+USB_DNS=${usb_dns}
+NETCONFEOF
+        log_success "Network config saved to /etc/picycle/network.conf"
 
         # Add wlan0 static IP to dhcpcd.conf
         log_step "=== CONFIGURING DHCPCD FOR WLAN0 AP MODE ==="
