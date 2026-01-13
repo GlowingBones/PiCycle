@@ -27,6 +27,12 @@ PiCycle configures a Raspberry Pi Zero 2 W to present multiple USB functions con
 - Mass storage (exposed over USB)
 - USB Ethernet (network emulator) with a local web interface
 
+### Web Interface
+
+<p align="center">
+  <img src="assets/images/ScreenPic1.png" alt="PiCycle Web Interface" width="600">
+</p>
+
 ## Hardware
 
 - Raspberry Pi Zero 2 W: https://a.co/d/dgyNJGX
