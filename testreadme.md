@@ -65,21 +65,15 @@ sudo bash ./install.sh
 
 ## Connect
 
-PiCycle provides two ways to reach the web interface:
-
-### Option A: USB network (recommended)
-
 Using the USB dongle expansion board, plug the PiCycle device directly into your computer's USB port.
 
 Open:
 
 - http://10.55.0.1/
 
-### Option B: WiFi access point
+### WiFi Management
 
-Connect to SSID `PiCycle`, then open:
-
-- http://192.168.4.1
+WiFi remains in client mode (keeps your existing network). You can scan and connect to WiFi networks (home WiFi, phone hotspot, etc.) from the web interface.
 
 ## Troubleshooting
 
@@ -89,13 +83,9 @@ Connect to SSID `PiCycle`, then open:
 - On Windows, the RNDIS driver may need to install automatically; wait a moment
 
 **Can't reach the web interface**
-- Verify your computer received an IP address in the `10.55.0.x` range (USB) or `192.168.4.x` range (WiFi)
+- Verify your computer received an IP address in the `10.55.0.x` range
 - Try disabling other network interfaces temporarily
 - Clear your browser cache or try incognito mode
-
-**WiFi access point not visible**
-- The AP may take 30-60 seconds to start after boot
-- Ensure the Pi has fully booted (green LED activity stops)
 
 ## Safety and legal
 
