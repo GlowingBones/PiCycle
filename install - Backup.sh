@@ -602,6 +602,16 @@ SERVICEEOF
     log_success "Created and enabled picycle.service"
     echo -e "  ${GREEN}✓${NC} Service enabled"
 
+    # Create udev rule for persistent HID device permissions
+    log_step "Creating udev rule for HID device permissions..."
+    cat > /etc/udev/rules.d/99-picycle-hid.rules << 'UDEVEOF'
+# PiCycle: Set permissions on HID gadget device
+# This ensures /dev/hidg0 is always accessible for HID scripts
+KERNEL=="hidg[0-9]*", MODE="0666", GROUP="plugdev"
+UDEVEOF
+    udevadm control --reload-rules 2>/dev/null || true
+    log_success "udev rule created for /dev/hidg0 permissions"
+
     # Configure network
     log_step "[STEP 8/9] Configuring USB network and DHCP"
     echo -e "\n${YELLOW}[8/9] Configuring USB network and DHCP...${NC}"
@@ -884,280 +894,20 @@ EOF
     echo -e "  ${GREEN}•${NC} ${WHITE}USB Drive${NC} - 'PICYCLE' (${storage_mb}MB FAT32)"
     echo -e "  ${GREEN}•${NC} ${WHITE}HID Keyboard${NC} - Ready for use with picycle.py"
     echo -e ""
-    echo -e "${CYAN}SSH Access:${NC}"
-    echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC}"
-    echo -e "  • Via WiFi AP: ${YELLOW}ssh pi@192.168.4.1${NC}"
+    echo -e "${CYAN}Access Methods:${NC}"
+    echo -e "  • Via USB network: ${YELLOW}ssh pi@10.55.0.1${NC} or ${YELLOW}http://10.55.0.1/${NC}"
+    echo -e "  • Via WiFi: Use your existing WiFi network (configured during OS flash)"
     echo -e ""
-    echo -e "${CYAN}WiFi Access Point:${NC}"
-    echo -e "  • SSID: ${YELLOW}PiCycle${NC}"
-    echo -e "  • IP: ${YELLOW}192.168.4.1${NC}"
+    echo -e "${CYAN}WiFi Management:${NC}"
+    echo -e "  • WiFi remains in client mode (keeps your existing network)"
+    echo -e "  • Manage WiFi networks from the web interface at ${YELLOW}http://10.55.0.1/${NC}"
+    echo -e "  • Scan and connect to new networks (home WiFi, phone hotspot, etc.)"
     echo -e ""
 
     read -p "Reboot now? (y/n): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        # Configure WiFi AP before reboot
-        log_step "=== WIFI AP CONFIGURATION STARTING ==="
-        echo -e "\n${CYAN}${BOLD}Configuring WiFi Access Point before reboot...${NC}"
-
-        # Create log file for WiFi AP setup (also logged to master log)
-        local ap_log="/var/log/picycle_ap_setup.log"
-        echo "=== PiCycle WiFi AP Setup Log ===" > "$ap_log"
-        echo "Started: $(date)" >> "$ap_log"
-        echo "Note: This log is also captured in $INSTALL_LOG" >> "$ap_log"
-
-        # Get password from user
-        local wifi_pass=""
-        while true; do
-            read -sp "Enter WiFi AP password (8-63 characters): " wifi_pass
-            echo ""
-            if [ ${#wifi_pass} -lt 8 ] || [ ${#wifi_pass} -gt 63 ]; then
-                echo -e "${RED}Password must be 8-63 characters${NC}"
-                continue
-            fi
-            read -sp "Confirm password: " wifi_pass_confirm
-            echo ""
-            if [ "$wifi_pass" != "$wifi_pass_confirm" ]; then
-                echo -e "${RED}Passwords do not match${NC}"
-                continue
-            fi
-            break
-        done
-        log_step "WiFi AP password obtained (length: ${#wifi_pass})"
-
-        # Install hostapd if needed
-        echo -e "${YELLOW}Installing hostapd...${NC}"
-        log_step "Installing hostapd package..."
-        apt install -y hostapd >> "$ap_log" 2>&1 || log_error "apt install hostapd failed"
-
-        # Stop hostapd for now
-        systemctl stop hostapd 2>/dev/null || true
-        log_step "hostapd service stopped"
-
-        # === CRITICAL: Completely disable ALL WiFi client functionality ===
-        echo -e "${YELLOW}Disabling WiFi client mode (home WiFi)...${NC}"
-        log_step "=== DISABLING WIFI CLIENT MODE ==="
-
-        # Step 1: Take down the wlan0 interface immediately
-        log_step "Step 1: Taking down wlan0 interface..."
-        ip link set wlan0 down 2>/dev/null || true
-
-        # Step 2: Disconnect via wpa_cli
-        log_step "Step 2: Disconnecting wpa_cli..."
-        wpa_cli -i wlan0 disconnect 2>/dev/null || true
-
-        # Step 3: Terminate wpa_supplicant
-        log_step "Step 3: Terminating wpa_supplicant via wpa_cli..."
-        wpa_cli -i wlan0 terminate 2>/dev/null || true
-        sleep 1
-
-        # Step 4: Stop wpa_supplicant service
-        log_step "Step 4: Stopping wpa_supplicant service..."
-        systemctl stop wpa_supplicant 2>/dev/null || true
-        systemctl stop wpa_supplicant@wlan0 2>/dev/null || true
-
-        # Step 5: Disable wpa_supplicant service
-        log_step "Step 5: Disabling wpa_supplicant service..."
-        systemctl disable wpa_supplicant 2>/dev/null || true
-        systemctl disable wpa_supplicant@wlan0 2>/dev/null || true
-
-        # Step 6: Mask wpa_supplicant to prevent ANY start
-        log_step "Step 6: Masking wpa_supplicant service..."
-        systemctl mask wpa_supplicant 2>/dev/null || true
-        systemctl mask wpa_supplicant@wlan0 2>/dev/null || true
-
-        # Step 7: Kill any remaining wpa_supplicant processes forcefully
-        log_step "Step 7: Force killing any wpa_supplicant processes..."
-        pkill -9 wpa_supplicant 2>/dev/null || true
-        killall -9 wpa_supplicant 2>/dev/null || true
-        sleep 1
-
-        # Step 8: Backup and completely remove wpa_supplicant.conf networks
-        log_step "Step 8: Removing WiFi network configurations..."
-        if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
-            cp /etc/wpa_supplicant/wpa_supplicant.conf "/etc/wpa_supplicant/wpa_supplicant.conf.backup.$(date +%Y%m%d%H%M%S)"
-            log_step "Backed up wpa_supplicant.conf"
-            # Create empty config with NO networks
-            cat > /etc/wpa_supplicant/wpa_supplicant.conf << 'WPAEOF'
-ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
-update_config=0
-country=US
-# ALL NETWORKS REMOVED - WiFi is in AP mode only
-# Original config backed up as wpa_supplicant.conf.backup.*
-WPAEOF
-            log_success "wpa_supplicant.conf cleared of all networks"
-        fi
-
-        # Step 9: Also remove any wpa_supplicant interface-specific configs
-        log_step "Step 9: Removing interface-specific wpa_supplicant configs..."
-        rm -f /etc/wpa_supplicant/wpa_supplicant-wlan0.conf 2>/dev/null || true
-        rm -f /var/run/wpa_supplicant/wlan0 2>/dev/null || true
-
-        # Step 10: Disable NetworkManager management of wlan0 (if NetworkManager exists)
-        log_step "Step 10: Checking for NetworkManager..."
-        if command -v nmcli &>/dev/null; then
-            log_step "NetworkManager found, setting wlan0 to unmanaged..."
-            nmcli device set wlan0 managed no 2>/dev/null || true
-
-            # Create NetworkManager config to ignore wlan0
-            mkdir -p /etc/NetworkManager/conf.d
-            cat > /etc/NetworkManager/conf.d/99-picycle-ignore-wlan0.conf << 'NMEOF'
-[keyfile]
-unmanaged-devices=interface-name:wlan0
-NMEOF
-            log_success "NetworkManager configured to ignore wlan0"
-        else
-            log_step "NetworkManager not found (OK)"
-        fi
-
-        # Step 11: Use rfkill to ensure WiFi is unblocked (for AP mode)
-        log_step "Step 11: Ensuring WiFi is unblocked via rfkill..."
-        rfkill unblock wifi 2>/dev/null || true
-        rfkill unblock wlan 2>/dev/null || true
-
-        # Step 12: Remove any dhcpcd hooks for wpa_supplicant on wlan0
-        log_step "Step 12: Configuring dhcpcd to not use wpa_supplicant on wlan0..."
-        # This is already done via nohook, but let's also create a dhcpcd hook file
-        mkdir -p /etc/dhcpcd.enter-hook.d
-        cat > /etc/dhcpcd.enter-hook.d/10-picycle-no-wlan0-client << 'HOOKEOF'
-#!/bin/bash
-# PiCycle: Prevent dhcpcd from managing wlan0 as WiFi client
-if [ "$interface" = "wlan0" ]; then
-    # wlan0 is managed by hostapd for AP mode, not dhcpcd for client mode
-    exit 0
-fi
-HOOKEOF
-        chmod +x /etc/dhcpcd.enter-hook.d/10-picycle-no-wlan0-client 2>/dev/null || true
-
-        # Verify wpa_supplicant is completely stopped
-        sleep 2
-        if pgrep -x wpa_supplicant > /dev/null; then
-            log_error "wpa_supplicant STILL RUNNING after all disable steps!"
-            echo -e "${RED}Warning: wpa_supplicant still running - forcing kill${NC}"
-            pkill -9 wpa_supplicant 2>/dev/null || true
-        else
-            log_success "wpa_supplicant completely disabled"
-            echo -e "${GREEN}✓ wpa_supplicant disabled${NC}"
-        fi
-
-        # Create hostapd config
-        echo -e "${YELLOW}Configuring Access Point...${NC}"
-        log_step "=== CREATING HOSTAPD CONFIGURATION ==="
-        mkdir -p /etc/hostapd
-        cat > /etc/hostapd/hostapd.conf << HOSTAPDEOF
-interface=wlan0
-driver=nl80211
-ssid=PiCycle
-hw_mode=g
-channel=7
-wmm_enabled=0
-macaddr_acl=0
-auth_algs=1
-ignore_broadcast_ssid=0
-wpa=2
-wpa_passphrase=$wifi_pass
-wpa_key_mgmt=WPA-PSK
-wpa_pairwise=TKIP
-rsn_pairwise=CCMP
-HOSTAPDEOF
-        chmod 600 /etc/hostapd/hostapd.conf
-        log_success "hostapd.conf created with SSID=PiCycle"
-
-        # Point hostapd to config
-        if [ -f /etc/default/hostapd ]; then
-            sed -i 's|^#*DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-            log_step "Updated /etc/default/hostapd"
-        fi
-
-        # Create dnsmasq config for wlan0 AP
-        log_step "=== CREATING DNSMASQ CONFIG FOR WLAN0 ==="
-        mkdir -p /etc/dnsmasq.d
-        cat > /etc/dnsmasq.d/wlan0-ap.conf << 'WLANEOF'
-# PiCycle WiFi AP DHCP
-interface=wlan0
-bind-interfaces
-dhcp-range=192.168.4.10,192.168.4.100,255.255.255.0,24h
-dhcp-option=option:router,192.168.4.1
-dhcp-option=option:dns-server,192.168.4.1
-WLANEOF
-        log_success "wlan0-ap.conf created (DHCP: 192.168.4.10-100)"
-
-        # Add wlan0 static IP to dhcpcd.conf
-        log_step "=== CONFIGURING DHCPCD FOR WLAN0 AP MODE ==="
-        sed -i '/^# PiCycle-AP/,/^$/d' /etc/dhcpcd.conf 2>/dev/null || true
-        cat >> /etc/dhcpcd.conf << 'WLANAPEOF'
-
-# PiCycle-AP
-interface wlan0
-static ip_address=192.168.4.1/24
-nohook wpa_supplicant
-
-WLANAPEOF
-        log_success "dhcpcd.conf updated: wlan0 = 192.168.4.1/24, nohook wpa_supplicant"
-
-        # Enable hostapd to start on boot
-        log_step "=== ENABLING HOSTAPD SERVICE ==="
-        systemctl unmask hostapd 2>/dev/null || true
-        systemctl enable hostapd 2>/dev/null || true
-        log_step "hostapd service unmasked and enabled"
-
-        # Create a boot script to ensure hostapd starts cleanly
-        log_step "Creating hostapd pre-start script..."
-        cat > /usr/bin/picycle_ap_prestart.sh << 'PRESTARTEOF'
-#!/bin/bash
-# PiCycle: Ensure wlan0 is ready for hostapd
-# This runs before hostapd starts
-
-# Kill any rogue wpa_supplicant
-pkill -9 wpa_supplicant 2>/dev/null || true
-
-# Ensure wlan0 is down before hostapd takes over
-ip link set wlan0 down 2>/dev/null || true
-sleep 1
-
-# Unblock WiFi
-rfkill unblock wifi 2>/dev/null || true
-
-echo "PiCycle AP pre-start complete"
-PRESTARTEOF
-        chmod +x /usr/bin/picycle_ap_prestart.sh
-
-        # Create systemd override for hostapd to run pre-start script
-        mkdir -p /etc/systemd/system/hostapd.service.d
-        cat > /etc/systemd/system/hostapd.service.d/picycle.conf << 'OVERRIDEEOF'
-[Service]
-ExecStartPre=/usr/bin/picycle_ap_prestart.sh
-OVERRIDEEOF
-        systemctl daemon-reload
-        log_success "hostapd pre-start script installed"
-
-        # Verify hostapd is enabled
-        if systemctl is-enabled hostapd 2>/dev/null | grep -q enabled; then
-            log_success "hostapd service ENABLED"
-            echo -e "${GREEN}✓ hostapd enabled${NC}"
-        else
-            log_error "hostapd may not be enabled"
-            echo -e "${RED}Warning: hostapd may not be enabled${NC}"
-        fi
-
-        # Final status summary
-        log_step "=== WIFI AP CONFIGURATION FINAL STATUS ==="
-        log_step "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1 || echo 'masked/disabled')"
-        log_step "hostapd service: $(systemctl is-enabled hostapd 2>&1)"
-        log_step "wpa_supplicant running: $(pgrep -x wpa_supplicant > /dev/null && echo 'YES - PROBLEM!' || echo 'NO - Good')"
-
-        # Copy final log status to AP log file
-        echo "" >> "$ap_log"
-        echo "=== Final Status ===" >> "$ap_log"
-        echo "wpa_supplicant service: $(systemctl is-enabled wpa_supplicant 2>&1 || echo 'masked/disabled')" >> "$ap_log"
-        echo "hostapd service: $(systemctl is-enabled hostapd 2>&1)" >> "$ap_log"
-        echo "Completed: $(date)" >> "$ap_log"
-
-        log_success "=== WIFI AP CONFIGURATION COMPLETE ==="
-        echo -e "${GREEN}✓ WiFi AP configured (SSID: PiCycle)${NC}"
-        echo -e "${CYAN}Logs saved to:${NC}"
-        echo -e "  ${YELLOW}• $INSTALL_LOG${NC} (complete install log)"
-        echo -e "  ${YELLOW}• $ap_log${NC} (AP setup summary)"
+        log_success "=== INSTALLATION COMPLETE - REBOOTING ==="
         echo -e "${YELLOW}Rebooting now...${NC}"
         sleep 2
         reboot
